@@ -1,0 +1,174 @@
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  owner
+  staff
+  member
+}
+
+model Gym {
+  id        String   @id @default(uuid())
+  name      String
+  ownerName String
+  phone     String?
+  plan      String   @default("free")
+  createdAt DateTime @default(now())
+
+  users        User[]
+  members      Member[]
+  attendance   Attendance[]
+  payments     Payment[]
+  workoutPlans WorkoutPlan[]
+  dietPlans    DietPlan[]
+  supplements  Supplement[]
+}
+
+/// Every account that can sign in. The first user created for a gym is its
+/// owner; staff and members are added by the owner afterwards.
+model User {
+  id           String  @id @default(uuid())
+  gymId        String
+  email        String  @unique
+  /// Null for accounts that only ever sign in through Google.
+  passwordHash String?
+  name         String
+  role         Role    @default(member)
+  isActive     Boolean @default(true)
+
+  /// Set when the account represents a gym member, linking it to their record.
+  memberId String? @unique
+
+  googleId String? @unique
+
+  resetTokenHash String?
+  resetTokenAt   DateTime?
+
+  lastLoginAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  gym    Gym     @relation(fields: [gymId], references: [id])
+  member Member? @relation(fields: [memberId], references: [id])
+
+  @@index([gymId])
+  @@index([gymId, role])
+}
+
+model Member {
+  id             String   @id @default(uuid())
+  gymId          String
+  name           String
+  email          String?
+  phone          String?
+  photo          String?
+  membershipType String   @default("monthly")
+  feeAmount      Float?
+  startDate      DateTime
+  endDate        DateTime
+  status         String   @default("active")
+  createdAt      DateTime @default(now())
+
+  gym         Gym          @relation(fields: [gymId], references: [id])
+  attendance  Attendance[]
+  payments    Payment[]
+  memberPlans MemberPlan[]
+  user        User?
+
+  @@index([gymId])
+  @@index([gymId, endDate])
+}
+
+model Attendance {
+  id          String   @id @default(uuid())
+  memberId    String
+  gymId       String
+  checkedInAt DateTime @default(now())
+
+  member Member @relation(fields: [memberId], references: [id])
+  gym    Gym    @relation(fields: [gymId], references: [id])
+
+  @@index([gymId, checkedInAt])
+  @@index([memberId])
+}
+
+model Payment {
+  id          String   @id @default(uuid())
+  memberId    String
+  gymId       String
+  amount      Float
+  paymentDate DateTime @default(now())
+  method      String   @default("cash")
+  notes       String?
+  status      String   @default("paid")
+
+  member Member @relation(fields: [memberId], references: [id])
+  gym    Gym    @relation(fields: [gymId], references: [id])
+
+  @@index([gymId, status])
+  @@index([gymId, paymentDate])
+  @@index([memberId])
+}
+
+model WorkoutPlan {
+  id          String   @id @default(uuid())
+  gymId       String
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+
+  gym         Gym          @relation(fields: [gymId], references: [id])
+  memberPlans MemberPlan[]
+
+  @@index([gymId])
+}
+
+model DietPlan {
+  id          String   @id @default(uuid())
+  gymId       String
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+
+  gym         Gym          @relation(fields: [gymId], references: [id])
+  memberPlans MemberPlan[]
+
+  @@index([gymId])
+}
+
+model MemberPlan {
+  id            String   @id @default(uuid())
+  memberId      String
+  workoutPlanId String?
+  dietPlanId    String?
+  assignedAt    DateTime @default(now())
+
+  member      Member       @relation(fields: [memberId], references: [id])
+  workoutPlan WorkoutPlan? @relation(fields: [workoutPlanId], references: [id])
+  dietPlan    DietPlan?    @relation(fields: [dietPlanId], references: [id])
+
+  @@index([memberId])
+}
+
+model Supplement {
+  id          String   @id @default(uuid())
+  gymId       String
+  name        String
+  category    String
+  description String?
+  dosage      String?
+  timing      String?
+  price       Float?
+  stock       Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  gym Gym @relation(fields: [gymId], references: [id])
+
+  @@index([gymId])
+}
