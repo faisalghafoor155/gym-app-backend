@@ -4,6 +4,7 @@ import prisma from '../db.js';
 import { setSessionCookie } from '../services/session.js';
 import { audit, diff } from '../services/audit.js';
 import type { AuthedRequest } from '../types.js';
+import { issueInvite } from '../services/invite.js';
 import type {
   CreateStaffBody, UpdateUserBody, CreateMemberLoginBody,
   TransferOwnershipBody, IdParam,
@@ -13,6 +14,29 @@ const publicFields = {
   id: true, name: true, email: true, role: true,
   isActive: true, memberId: true, lastLoginAt: true, createdAt: true,
 } as const;
+
+const gymName = async (gymId: string): Promise<string> => {
+  const gym = await prisma.gym.findUnique({
+    where: { id: gymId },
+    select: { name: true },
+  });
+  return gym?.name ?? 'your gym';
+};
+
+/**
+ * What the client is told about an invite.
+ *
+ * The link comes back only when no mail was sent — the owner then has to pass
+ * it on themselves, and hiding it would strand the account. When mail did go
+ * out the link stays server-side, so it cannot be read off a screen by whoever
+ * is standing at the front desk.
+ */
+const inviteInfo = (invite: { link: string; emailed: boolean } | null) => {
+  if (!invite) return null;
+  return invite.emailed
+    ? { emailed: true as const }
+    : { emailed: false as const, link: invite.link };
+};
 
 /** Everyone who can sign in to this gym. */
 export const getAll = async (req: AuthedRequest, res: Response): Promise<void> => {
@@ -44,21 +68,32 @@ export const createStaff = async (
     const user = await prisma.user.create({
       data: {
         gymId: req.gymId, name, email,
-        passwordHash: await bcrypt.hash(password, 10),
+        // Null without a password: the account exists but cannot sign in until
+        // the invite is accepted.
+        passwordHash: password ? await bcrypt.hash(password, 10) : null,
         role: 'staff',
       },
       select: publicFields,
     });
+
+    const invite = password
+      ? null
+      : await issueInvite(user.id, {
+          email, gymName: await gymName(req.gymId),
+          role: 'staff', invitedBy: req.actorName,
+        });
 
     await audit(req, {
       action: 'staff.create',
       entity: 'user',
       entityId: user.id,
       entityLabel: `${user.name} · staff`,
-      after: { name, email, role: 'staff' },
+      // Which way the account was created is the part worth being able to look
+      // up later; the password itself never goes near an audit row.
+      after: { name, email, role: 'staff', method: password ? 'password' : 'invite' },
     });
 
-    res.status(201).json(user);
+    res.status(201).json({ ...user, invite: inviteInfo(invite) });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
@@ -96,21 +131,28 @@ export const createMemberLogin = async (
       data: {
         gymId: req.gymId, memberId, email,
         name: member.name,
-        passwordHash: await bcrypt.hash(password, 10),
+        passwordHash: password ? await bcrypt.hash(password, 10) : null,
         role: 'member',
       },
       select: publicFields,
     });
+
+    const invite = password
+      ? null
+      : await issueInvite(user.id, {
+          email, gymName: await gymName(req.gymId),
+          role: 'member', invitedBy: req.actorName,
+        });
 
     await audit(req, {
       action: 'memberLogin.create',
       entity: 'user',
       entityId: user.id,
       entityLabel: `${member.memberNo} · ${member.name}`,
-      after: { memberId, email, role: 'member' },
+      after: { memberId, email, role: 'member', method: password ? 'password' : 'invite' },
     });
 
-    res.status(201).json(user);
+    res.status(201).json({ ...user, invite: inviteInfo(invite) });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });

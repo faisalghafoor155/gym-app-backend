@@ -72,6 +72,15 @@ model User {
   resetTokenHash String?
   resetTokenAt   DateTime?
 
+  /// Set while an invited account is waiting for its owner to choose a
+  /// password. Only the hash is stored, so a database leak does not hand over
+  /// live invite links. Cleared the moment the invite is accepted.
+  ///
+  /// An account with a null passwordHash and no live invite cannot sign in at
+  /// all, which is what makes an expired invite safe to leave lying around.
+  inviteTokenHash String?
+  inviteTokenAt   DateTime?
+
   /// Bumped whenever every existing session must stop working — signing out,
   /// changing or resetting the password, deactivation, and role changes. The
   /// version is baked into each token, so one that carries a stale number is

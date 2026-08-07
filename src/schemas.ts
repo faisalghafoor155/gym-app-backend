@@ -83,11 +83,26 @@ export const googleAuthSchema = z.object({
 
 // --- users (staff & member logins) -------------------------------------
 
-export const createStaffSchema = z.object({ name, email, password });
+/**
+ * Password is optional on both: omitting it sends an invite instead, and the
+ * person sets their own. An owner who knows every password is a worse default
+ * than one who knows none, but a gym whose helper has no working email still
+ * has to be able to hand over a login, so both routes stay open.
+ */
+export const createStaffSchema = z.object({
+  name,
+  email,
+  password: password.optional(),
+});
 
 export const createMemberLoginSchema = z.object({
   memberId: uuid,
   email,
+  password: password.optional(),
+});
+
+export const acceptInviteSchema = z.object({
+  token: z.string().min(1, 'is required'),
   password,
 });
 
@@ -277,6 +292,7 @@ export type ChangePasswordBody = z.infer<typeof changePasswordSchema>;
 export type GoogleAuthBody = z.infer<typeof googleAuthSchema>;
 export type CreateStaffBody = z.infer<typeof createStaffSchema>;
 export type CreateMemberLoginBody = z.infer<typeof createMemberLoginSchema>;
+export type AcceptInviteBody = z.infer<typeof acceptInviteSchema>;
 export type UpdateUserBody = z.infer<typeof updateUserSchema>;
 export type TransferOwnershipBody = z.infer<typeof transferOwnershipSchema>;
 export type CreateMemberBody = z.infer<typeof createMemberSchema>;

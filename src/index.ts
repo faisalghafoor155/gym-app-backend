@@ -76,6 +76,10 @@ app.use('/api/auth/login', authLimiter);
 app.use('/api/auth/register', authLimiter);
 app.use('/api/auth/forgot-password', authLimiter);
 app.use('/api/auth/reset-password', authLimiter);
+// Invite tokens are credentials too — guessing one must cost the same as
+// guessing a password.
+app.use('/api/auth/invite', authLimiter);
+app.use('/api/auth/accept-invite', authLimiter);
 
 app.use('/api/auth', authRoutes);
 app.use('/api/users', usersRoutes);

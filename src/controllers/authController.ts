@@ -6,8 +6,9 @@ import { setSessionCookie, clearSessionCookie, revokeSessions } from '../service
 import type { AuthedRequest } from '../types.js';
 import type {
   RegisterBody, LoginBody, ForgotPasswordBody, ResetPasswordBody,
-  GoogleAuthBody, ChangePasswordBody,
+  GoogleAuthBody, ChangePasswordBody, AcceptInviteBody,
 } from '../schemas.js';
+import { findValidInvite } from '../services/invite.js';
 import { verifyGoogleToken } from '../services/google.js';
 import { DEFAULT_PLANS } from '../services/membership.js';
 import { sendMail, passwordResetMail } from '../services/mail.js';
@@ -221,6 +222,75 @@ export const resetPassword = async (
     });
 
     res.json({ message: 'Password updated. You can sign in now.' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * Tells the invite page whether the link is worth showing a form for, so
+ * somebody arriving on a dead link is told immediately rather than after
+ * choosing a password.
+ */
+export const checkInvite = async (req: Request, res: Response): Promise<void> => {
+  const token = typeof req.query['token'] === 'string' ? req.query['token'] : '';
+  try {
+    const invite = token ? await findValidInvite(token) : null;
+    if (!invite) {
+      res.status(400).json({ error: 'This invite link is invalid or has expired' });
+      return;
+    }
+
+    const user = await prisma.user.findUniqueOrThrow({
+      where: { id: invite.userId },
+      select: { name: true, email: true, role: true, ...sessionInclude },
+    });
+
+    // Enough to confirm the invite is for them, and nothing more — this is an
+    // unauthenticated endpoint reachable by anyone holding the link.
+    res.json({
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      gymName: user.gym.name,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * Sets the password on an invited account and signs them straight in — a
+ * second login prompt right after choosing a password is a step nobody needs.
+ */
+export const acceptInvite = async (
+  req: Request<unknown, unknown, AcceptInviteBody>,
+  res: Response,
+): Promise<void> => {
+  const { token, password } = req.body;
+  try {
+    const invite = await findValidInvite(token);
+    if (!invite) {
+      res.status(400).json({ error: 'This invite link is invalid or has expired' });
+      return;
+    }
+
+    // Clearing the token in the same update is what makes the link single-use:
+    // a second attempt finds no matching hash.
+    const user = await prisma.user.update({
+      where: { id: invite.userId },
+      data: {
+        passwordHash: await bcrypt.hash(password, 10),
+        inviteTokenHash: null,
+        inviteTokenAt: null,
+        lastLoginAt: new Date(),
+      },
+      include: sessionInclude,
+    });
+
+    res.json(startSession(res, user));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
