@@ -10,6 +10,7 @@ import type {
 } from '../schemas.js';
 import { verifyGoogleToken } from '../services/google.js';
 import { DEFAULT_PLANS } from '../services/membership.js';
+import { sendMail, passwordResetMail } from '../services/mail.js';
 
 /** A reset link is short-lived; an old inbox should not be a way in. */
 const RESET_TTL_MS = 60 * 60 * 1000;
@@ -155,7 +156,10 @@ export const forgotPassword = async (
 ): Promise<void> => {
   const reply = { message: 'If that email is registered, a reset link has been sent.' };
   try {
-    const user = await prisma.user.findUnique({ where: { email: req.body.email } });
+    const user = await prisma.user.findUnique({
+      where: { email: req.body.email },
+      include: { gym: { select: { name: true } } },
+    });
     if (!user || !user.isActive) {
       res.json(reply);
       return;
@@ -172,9 +176,14 @@ export const forgotPassword = async (
     });
 
     const link = `${process.env.APP_URL ?? 'http://localhost:8080'}/reset-password?token=${token}`;
-    // No mail transport is configured yet; the link goes to the server log so
-    // the flow is usable. Swap this for a real send when SMTP is set up.
-    console.log(`[password reset] ${user.email} -> ${link}`);
+
+    // Awaited, so a mail server that hangs shows up as a slow request rather
+    // than a silently dropped reset. `sendMail` never throws and logs the link
+    // when SMTP is unconfigured, so the flow stays usable either way.
+    await sendMail({
+      to: user.email,
+      ...passwordResetMail(link, RESET_TTL_MS / 60_000, user.gym?.name),
+    });
 
     res.json(reply);
   } catch (err) {
