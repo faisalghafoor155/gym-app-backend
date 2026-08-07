@@ -1,14 +1,15 @@
 import crypto from 'node:crypto';
-import type { Request, Response } from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import bcrypt from 'bcryptjs';
 import prisma from '../db.js';
-import { setSessionCookie, clearSessionCookie } from '../services/session.js';
+import { setSessionCookie, clearSessionCookie, revokeSessions } from '../services/session.js';
 import type { AuthedRequest } from '../types.js';
 import type {
   RegisterBody, LoginBody, ForgotPasswordBody, ResetPasswordBody,
   GoogleAuthBody, ChangePasswordBody,
 } from '../schemas.js';
 import { verifyGoogleToken } from '../services/google.js';
+import { DEFAULT_PLANS } from '../services/membership.js';
 
 /** A reset link is short-lived; an old inbox should not be a way in. */
 const RESET_TTL_MS = 60 * 60 * 1000;
@@ -19,9 +20,10 @@ const RESET_TTL_MS = 60 * 60 * 1000;
  */
 const startSession = (res: Response, user: {
   id: string; name: string; email: string; role: string; memberId: string | null;
+  tokenVersion: number;
   gym: { id: string; name: string; ownerName: string };
 }) => {
-  setSessionCookie(res, user.id);
+  setSessionCookie(res, user.id, user.tokenVersion);
   return {
     user: {
       id: user.id, name: user.name, email: user.email,
@@ -51,6 +53,13 @@ export const register = async (
     const passwordHash = await bcrypt.hash(password, 10);
     const user = await prisma.$transaction(async (tx) => {
       const gym = await tx.gym.create({ data: { name: gymName, ownerName, phone } });
+
+      // A new gym starts with a price list to edit rather than an empty table.
+      // Priced at zero on purpose — a made-up price looks like a real one.
+      await tx.membershipPlan.createMany({
+        data: DEFAULT_PLANS.map(p => ({ ...p, gymId: gym.id })),
+      });
+
       return tx.user.create({
         data: {
           gymId: gym.id, email, passwordHash,
@@ -190,12 +199,15 @@ export const resetPassword = async (
       return;
     }
 
+    // A reset is how someone recovers an account they may have lost control
+    // of, so every session opened with the old password goes with it.
     await prisma.user.update({
       where: { id: user.id },
       data: {
         passwordHash: await bcrypt.hash(password, 10),
         resetTokenHash: null,
         resetTokenAt: null,
+        tokenVersion: { increment: 1 },
       },
     });
 
@@ -225,19 +237,64 @@ export const changePassword = async (
       return;
     }
 
-    await prisma.user.update({
+    const updated = await prisma.user.update({
       where: { id: user.id },
-      data: { passwordHash: await bcrypt.hash(newPassword, 10) },
+      data: {
+        passwordHash: await bcrypt.hash(newPassword, 10),
+        tokenVersion: { increment: 1 },
+      },
+      select: { tokenVersion: true },
     });
-    res.json({ message: 'Password changed' });
+
+    // Every other device is signed out, but the tab that just changed the
+    // password keeps working: it gets a fresh cookie carrying the new version.
+    setSessionCookie(res, user.id, updated.tokenVersion);
+    res.json({ message: 'Password changed. Other devices have been signed out.' });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
   }
 };
 
-/** The cookie is httpOnly, so only the server can end the session. */
-export const logout = (_req: Request, res: Response): void => {
+/**
+ * Sits in front of `auth` on the logout route. Signing out with a session that
+ * is already dead — expired, or revoked from another device — should still
+ * clear the cookie rather than answer 401 and leave it in the browser.
+ *
+ * `auth` replies through `res.status(401).json(...)`, so intercepting `json`
+ * is what catches it; anything else passes through untouched.
+ */
+export const logoutFallback = (_req: Request, res: Response, next: NextFunction): void => {
+  const json = res.json.bind(res);
+  res.json = (body: unknown) => {
+    if (res.statusCode === 401) {
+      res.status(200);
+      clearSessionCookie(res);
+      return json({ message: 'Signed out' });
+    }
+    return json(body);
+  };
+  next();
+};
+
+/**
+ * The cookie is httpOnly, so only the server can end the session. Clearing it
+ * is not enough on its own — a copy of the token taken beforehand would still
+ * be valid for the rest of its 30 days — so the account's token version moves
+ * on and strands it.
+ *
+ * This signs the account out everywhere rather than just in this browser.
+ * Sessions are not tracked individually, so there is nothing finer to revoke;
+ * for an app where one person's account is one person's login, signing out
+ * meaning "signed out" is the safer reading.
+ */
+export const logout = async (req: AuthedRequest, res: Response): Promise<void> => {
+  try {
+    await revokeSessions(req.userId);
+  } catch (err) {
+    // The cookie still goes, so the browser is signed out either way.
+    console.error(err);
+  }
   clearSessionCookie(res);
   res.json({ message: 'Signed out' });
 };

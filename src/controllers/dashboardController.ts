@@ -1,24 +1,73 @@
 import type { Response } from 'express';
 import prisma from '../db.js';
+import {
+  EXPIRING_SOON_DAYS, LAPSED_AFTER_DAYS, addDays, toView, withPlan,
+} from '../services/membership.js';
 import type { AuthedRequest } from '../types.js';
+
+const memberSummary = {
+  member: { select: { id: true, memberNo: true, name: true, phone: true } },
+} as const;
+
+/** How much of the recent past the two charts cover. */
+const REVENUE_MONTHS = 6;
+const ATTENDANCE_DAYS = 30;
+
+/** Longest follow-up list the dashboard shows before deferring to the full
+ *  Members page — a panel nobody scrolls is a panel nobody reads. */
+const FOLLOW_UP_LIMIT = 10;
+
+const startOfDay = (d: Date): Date => {
+  const c = new Date(d); c.setHours(0, 0, 0, 0); return c;
+};
+
+/** First instant of the month `back` months before `from`. */
+const startOfMonth = (from: Date, back = 0): Date =>
+  new Date(from.getFullYear(), from.getMonth() - back, 1);
+
+/** `2026-08` — the key both the bucketing and the chart agree on, built from
+ *  local parts so it does not shift a payment into the wrong month the way
+ *  toISOString would for anywhere east of UTC. */
+const monthKey = (d: Date): string =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+
+const dayKey = (d: Date): string =>
+  `${monthKey(d)}-${String(d.getDate()).padStart(2, '0')}`;
 
 export const getStats = async (req: AuthedRequest, res: Response): Promise<void> => {
   try {
     const now = new Date();
-    const weekFromNow = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-    const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
-    const todayEnd = new Date(); todayEnd.setHours(23, 59, 59, 999);
+    const soon = addDays(now, EXPIRING_SOON_DAYS);
+    // Everything expired within the last 60 days is somebody worth phoning.
+    // Past that they are lapsed, and belong on the Members page instead.
+    const lapsedBefore = addDays(startOfDay(now), -LAPSED_AFTER_DAYS);
+    const todayStart = startOfDay(now);
+    const todayEnd = new Date(todayStart); todayEnd.setHours(23, 59, 59, 999);
 
     const gymId = req.gymId;
+    // Money is owner-only, so the queries behind it are not even run for staff.
+    const isOwner = req.role === 'owner';
+
+    // Counts run off Membership now that a member's dates live there. Only
+    // `active` rows are measured against the calendar — a cancelled or
+    // superseded membership is not "expired", it is simply over.
+    const live = { gymId, status: 'active' } as const;
+
+    const revenueSince = startOfMonth(now, REVENUE_MONTHS - 1);
+    const attendanceSince = addDays(todayStart, -(ATTENDANCE_DAYS - 1));
+
     const [
-      totalMembers, activeMembers, expiringMembers,
+      totalMembers, activeMembers, expiringMemberships,
       todayAttendance, recentMembers, duePayments,
+      followUpMemberships, lapsedCount,
+      attendanceRows, paymentRows, dueAmount, gym,
     ] = await Promise.all([
       prisma.member.count({ where: { gymId } }),
-      prisma.member.count({ where: { gymId, endDate: { gte: weekFromNow } } }),
-      prisma.member.findMany({
-        where: { gymId, endDate: { gte: now, lte: weekFromNow } },
-        select: { id: true, name: true, phone: true, endDate: true },
+      prisma.membership.count({ where: { ...live, expiryDate: { gt: soon } } }),
+      prisma.membership.findMany({
+        where: { ...live, expiryDate: { gte: now, lte: soon } },
+        include: { ...memberSummary, ...withPlan },
+        orderBy: { expiryDate: 'asc' },
       }),
       prisma.attendance.count({
         where: { gymId, checkedInAt: { gte: todayStart, lte: todayEnd } },
@@ -28,20 +77,131 @@ export const getStats = async (req: AuthedRequest, res: Response): Promise<void>
         orderBy: { createdAt: 'desc' },
         take: 5,
         select: {
-          id: true, name: true, phone: true,
-          membershipType: true, endDate: true, createdAt: true,
+          id: true, memberNo: true, name: true, phone: true, createdAt: true,
+          memberships: {
+            where: { status: { notIn: ['superseded', 'cancelled'] } },
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+            include: withPlan,
+          },
         },
       }),
-      prisma.member.count({ where: { gymId, endDate: { lt: now } } }),
+      prisma.membership.count({ where: { ...live, expiryDate: { lt: now } } }),
+
+      // Expired, but not yet lapsed: the renewal-call list.
+      prisma.membership.findMany({
+        where: { ...live, expiryDate: { gte: lapsedBefore, lt: todayStart } },
+        include: { ...memberSummary, ...withPlan },
+        orderBy: { expiryDate: 'asc' },
+        take: FOLLOW_UP_LIMIT,
+      }),
+      prisma.membership.count({ where: { ...live, expiryDate: { lt: lapsedBefore } } }),
+
+      prisma.attendance.findMany({
+        where: { gymId, checkedInAt: { gte: attendanceSince, lte: todayEnd } },
+        select: { checkedInAt: true },
+      }),
+
+      isOwner
+        ? prisma.payment.findMany({
+            where: { gymId, status: 'paid', paymentDate: { gte: revenueSince } },
+            select: { amount: true, paymentDate: true },
+          })
+        : Promise.resolve([]),
+      isOwner
+        ? prisma.payment.aggregate({
+            where: { gymId, status: 'due' },
+            _sum: { amount: true },
+          })
+        : Promise.resolve(null),
+
+      prisma.gym.findUniqueOrThrow({
+        where: { id: gymId },
+        select: { createdAt: true },
+      }),
     ]);
+
+    // ------------------------------------------------------------- charts
+
+    // Buckets are seeded from the months that actually exist, so a gym three
+    // months old gets three bars rather than three bars and three zeroes
+    // pretending it was closed.
+    const firstMonth = startOfMonth(gym.createdAt) > revenueSince
+      ? startOfMonth(gym.createdAt)
+      : revenueSince;
+
+    const revenueBuckets = new Map<string, number>();
+    for (let m = new Date(firstMonth); m <= now; m.setMonth(m.getMonth() + 1)) {
+      revenueBuckets.set(monthKey(m), 0);
+    }
+    for (const p of paymentRows) {
+      const k = monthKey(p.paymentDate);
+      if (revenueBuckets.has(k)) {
+        revenueBuckets.set(k, revenueBuckets.get(k)! + p.amount);
+      }
+    }
+    const revenueByMonth = [...revenueBuckets].map(([month, total]) => ({
+      month,
+      label: new Date(`${month}-01T00:00:00`).toLocaleDateString('en-PK', { month: 'short' }),
+      total,
+    }));
+
+    // Every day in the window gets a bucket, including the empty ones — a gap
+    // in a trend line has to read as "nobody came", not as missing data.
+    const attendanceBuckets = new Map<string, number>();
+    for (let i = ATTENDANCE_DAYS - 1; i >= 0; i--) {
+      attendanceBuckets.set(dayKey(addDays(todayStart, -i)), 0);
+    }
+    const hourCounts: number[] = Array.from({ length: 24 }, () => 0);
+    for (const a of attendanceRows) {
+      const k = dayKey(a.checkedInAt);
+      if (attendanceBuckets.has(k)) {
+        attendanceBuckets.set(k, attendanceBuckets.get(k)! + 1);
+      }
+      hourCounts[a.checkedInAt.getHours()]! += 1;
+    }
+    const attendanceByDay = [...attendanceBuckets].map(([date, count]) => ({ date, count }));
+
+    const busiest = hourCounts.reduce(
+      (best, count, hour) => (count > best.count ? { hour, count } : best),
+      { hour: -1, count: 0 },
+    );
+
+    const thisMonth = revenueByMonth.at(-1)?.total ?? 0;
+    const lastMonth = revenueByMonth.at(-2)?.total ?? 0;
 
     res.json({
       totalMembers,
       activeMembers,
-      expiringMembers,
+      expiringMembers: expiringMemberships.map(m => ({
+        ...m.member,
+        membership: toView(m, now),
+      })),
       todayAttendance,
-      recentMembers,
+      recentMembers: recentMembers.map(({ memberships, ...m }) => ({
+        ...m,
+        currentMembership: memberships[0] ? toView(memberships[0], now) : null,
+      })),
       duePayments,
+      lapsedMembers: lapsedCount,
+      followUpMembers: followUpMemberships.map(m => ({
+        ...m.member,
+        membership: toView(m, now),
+      })),
+      attendanceByDay,
+      // -1 means nobody has checked in at all in the window, which the client
+      // shows as "not enough data" rather than as midnight.
+      peakHour: busiest.count > 0 ? busiest.hour : null,
+      // Revenue keys are absent entirely for staff, not zeroed — a zero would
+      // be a number they are not allowed to have, and a wrong one at that.
+      ...(isOwner && {
+        revenue: {
+          thisMonth,
+          lastMonth,
+          dueTotal: dueAmount?._sum.amount ?? 0,
+          byMonth: revenueByMonth,
+        },
+      }),
     });
   } catch (err) {
     console.error(err);

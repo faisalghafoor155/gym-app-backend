@@ -30,7 +30,10 @@ export default async (req: Request, res: Response, next: NextFunction): Promise<
     // instead of whenever a 30-day token happens to expire.
     const user = await prisma.user.findUnique({
       where: { id: payload.userId },
-      select: { id: true, gymId: true, role: true, isActive: true, memberId: true },
+      select: {
+        id: true, gymId: true, name: true, role: true, isActive: true,
+        memberId: true, tokenVersion: true,
+      },
     });
 
     if (!user || !user.isActive) {
@@ -38,12 +41,22 @@ export default async (req: Request, res: Response, next: NextFunction): Promise<
       return;
     }
 
+    // Signing out, a password change or a role change bumps the stored version,
+    // which strands every token signed before it. The account row is already
+    // loaded above, so this costs nothing extra.
+    if (payload.tokenVersion !== user.tokenVersion) {
+      res.status(401).json({ error: 'Session expired. Please sign in again.' });
+      return;
+    }
+
     const r = req as Request & {
-      gymId: string; userId: string; role: typeof user.role; memberId: string | null;
+      gymId: string; userId: string; role: typeof user.role;
+      actorName: string; memberId: string | null;
     };
     r.gymId = user.gymId;
     r.userId = user.id;
     r.role = user.role;
+    r.actorName = user.name;
     r.memberId = user.memberId;
     next();
   } catch (err) {

@@ -1,5 +1,6 @@
 import type { Response } from 'express';
 import prisma from '../db.js';
+import { toView, withPlan } from '../services/membership.js';
 import type { AuthedRequest } from '../types.js';
 
 /**
@@ -18,8 +19,15 @@ export const getMyProfile = async (req: AuthedRequest, res: Response): Promise<v
       prisma.member.findUnique({
         where: { id: req.memberId },
         select: {
-          id: true, name: true, email: true, phone: true, photo: true,
-          membershipType: true, feeAmount: true, startDate: true, endDate: true,
+          id: true, memberNo: true, name: true, email: true, phone: true,
+          photo: true, gender: true, dateOfBirth: true, address: true,
+          emergencyContact: true,
+          memberships: {
+            where: { status: { notIn: ['superseded', 'cancelled'] } },
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+            include: withPlan,
+          },
         },
       }),
       prisma.memberPlan.findFirst({
@@ -44,11 +52,15 @@ export const getMyProfile = async (req: AuthedRequest, res: Response): Promise<v
       return;
     }
 
-    const daysLeft = Math.ceil((member.endDate.getTime() - Date.now()) / 86400000);
-    const status = daysLeft < 0 ? 'expired' : daysLeft <= 7 ? 'expiring' : 'active';
+    const { memberships, ...profile } = member;
 
     res.json({
-      member: { ...member, status, daysLeft },
+      // Status and days-left come off the membership now; a member with none
+      // gets null rather than a fabricated expiry.
+      member: {
+        ...profile,
+        currentMembership: memberships[0] ? toView(memberships[0]) : null,
+      },
       plan,
       attendance,
       payments,

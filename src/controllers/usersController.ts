@@ -1,6 +1,8 @@
 import type { Response } from 'express';
 import bcrypt from 'bcryptjs';
 import prisma from '../db.js';
+import { setSessionCookie } from '../services/session.js';
+import { audit, diff } from '../services/audit.js';
 import type { AuthedRequest } from '../types.js';
 import type {
   CreateStaffBody, UpdateUserBody, CreateMemberLoginBody,
@@ -47,6 +49,15 @@ export const createStaff = async (
       },
       select: publicFields,
     });
+
+    await audit(req, {
+      action: 'staff.create',
+      entity: 'user',
+      entityId: user.id,
+      entityLabel: `${user.name} · staff`,
+      after: { name, email, role: 'staff' },
+    });
+
     res.status(201).json(user);
   } catch (err) {
     console.error(err);
@@ -90,6 +101,15 @@ export const createMemberLogin = async (
       },
       select: publicFields,
     });
+
+    await audit(req, {
+      action: 'memberLogin.create',
+      entity: 'user',
+      entityId: user.id,
+      entityLabel: `${member.memberNo} · ${member.name}`,
+      after: { memberId, email, role: 'member' },
+    });
+
     res.status(201).json(user);
   } catch (err) {
     console.error(err);
@@ -116,11 +136,34 @@ export const update = async (
       return;
     }
 
+    // Deactivating has to reach the sessions that account already has open.
+    // `auth` would catch it on the next request anyway via `isActive`, but
+    // bumping the version keeps one rule — a revoked token is a stale token —
+    // rather than two ways for a session to die. Reactivating leaves the
+    // version alone; there is nothing live to strand.
+    const revoke = isActive === false;
+
     const user = await prisma.user.update({
       where: { id },
-      data: { ...(name && { name }), ...(isActive !== undefined && { isActive }) },
+      data: {
+        ...(name && { name }),
+        ...(isActive !== undefined && { isActive }),
+        ...(revoke && { tokenVersion: { increment: 1 } }),
+      },
       select: publicFields,
     });
+
+    const changed = diff(target, user, ['name', 'isActive'] as const);
+    if (changed) {
+      await audit(req, {
+        action: 'staff.update',
+        entity: 'user',
+        entityId: id,
+        entityLabel: `${user.name} · ${user.role}`,
+        ...changed,
+      });
+    }
+
     res.json(user);
   } catch (err) {
     console.error(err);
@@ -145,6 +188,15 @@ export const remove = async (
     }
 
     await prisma.user.delete({ where: { id } });
+
+    await audit(req, {
+      action: 'staff.delete',
+      entity: 'user',
+      entityId: id,
+      entityLabel: `${target.name} · ${target.role}`,
+      before: { name: target.name, email: target.email, role: target.role },
+    });
+
     res.json({ message: 'Account removed' });
   } catch (err) {
     console.error(err);
@@ -176,11 +228,34 @@ export const transferOwnership = async (
       return;
     }
 
-    await prisma.$transaction([
-      prisma.user.update({ where: { id: target.id }, data: { role: 'owner' } }),
-      prisma.user.update({ where: { id: req.userId }, data: { role: 'staff' } }),
+    // Both accounts change role, so both sets of open sessions have to go —
+    // otherwise the outgoing owner keeps owner access on any other device
+    // until their token happens to expire.
+    const [, self] = await prisma.$transaction([
+      prisma.user.update({
+        where: { id: target.id },
+        data: { role: 'owner', tokenVersion: { increment: 1 } },
+      }),
+      prisma.user.update({
+        where: { id: req.userId },
+        data: { role: 'staff', tokenVersion: { increment: 1 } },
+        select: { tokenVersion: true },
+      }),
       prisma.gym.update({ where: { id: req.gymId }, data: { ownerName: target.name } }),
     ]);
+
+    // The browser that performed the transfer stays signed in — now as staff —
+    // instead of being bounced to the login page by its own action.
+    setSessionCookie(res, req.userId, self.tokenVersion);
+
+    await audit(req, {
+      action: 'ownership.transfer',
+      entity: 'gym',
+      entityId: req.gymId,
+      entityLabel: target.name,
+      before: { ownerId: req.userId, ownerName: req.actorName },
+      after: { ownerId: target.id, ownerName: target.name },
+    });
 
     res.json({ message: `Ownership transferred to ${target.name}. You are now staff.` });
   } catch (err) {

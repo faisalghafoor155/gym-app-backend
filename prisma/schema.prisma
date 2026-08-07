@@ -13,6 +13,18 @@ enum Role {
   member
 }
 
+/// What a membership currently is. `expiring` is deliberately absent: it is a
+/// function of today's date, so storing it would need a job to keep every row
+/// honest. It is derived on read instead, and is therefore always right.
+enum MembershipStatus {
+  active
+  expired
+  suspended
+  cancelled
+  /// Replaced by a newer membership — kept so history stays complete.
+  superseded
+}
+
 model Gym {
   id        String   @id @default(uuid())
   name      String
@@ -21,13 +33,23 @@ model Gym {
   plan      String   @default("free")
   createdAt DateTime @default(now())
 
-  users        User[]
-  members      Member[]
-  attendance   Attendance[]
-  payments     Payment[]
-  workoutPlans WorkoutPlan[]
-  dietPlans    DietPlan[]
-  supplements  Supplement[]
+  /// Counter behind the readable member numbers (MEM-00001, MEM-00002, …).
+  /// Per gym, so every gym starts at 1 and nobody sees a number that hints at
+  /// how many members the rest of the system has. Only ever moves forward —
+  /// a deleted member's number is not reissued, because an old receipt
+  /// pointing at somebody else would be worse than a gap in the sequence.
+  memberSeq Int @default(0)
+
+  users           User[]
+  members         Member[]
+  attendance      Attendance[]
+  payments        Payment[]
+  workoutPlans    WorkoutPlan[]
+  dietPlans       DietPlan[]
+  supplements     Supplement[]
+  membershipPlans MembershipPlan[]
+  memberships     Membership[]
+  auditLogs       AuditLog[]
 }
 
 /// Every account that can sign in. The first user created for a gym is its
@@ -50,6 +72,12 @@ model User {
   resetTokenHash String?
   resetTokenAt   DateTime?
 
+  /// Bumped whenever every existing session must stop working — signing out,
+  /// changing or resetting the password, deactivation, and role changes. The
+  /// version is baked into each token, so one that carries a stale number is
+  /// rejected instead of living out its 30 days.
+  tokenVersion Int @default(0)
+
   lastLoginAt DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
@@ -61,28 +89,104 @@ model User {
   @@index([gymId, role])
 }
 
+/// A person who trains at the gym. What they bought and when it runs out lives
+/// on Membership, not here — a member outlives any one membership, and the
+/// history of what they have paid for is worth keeping.
 model Member {
-  id             String   @id @default(uuid())
-  gymId          String
-  name           String
-  email          String?
-  phone          String?
-  photo          String?
-  membershipType String   @default("monthly")
-  feeAmount      Float?
-  startDate      DateTime
-  endDate        DateTime
-  status         String   @default("active")
-  createdAt      DateTime @default(now())
+  id    String @id @default(uuid())
+  gymId String
+
+  /// Readable identifier the gym actually uses out loud: MEM-00125. Unique
+  /// within the gym, not globally.
+  memberNo String
+
+  name  String
+  email String?
+  phone String?
+  photo String?
+
+  gender           String?
+  dateOfBirth      DateTime?
+  address          String?
+  emergencyContact String?
+
+  status    String   @default("active")
+  createdAt DateTime @default(now())
 
   gym         Gym          @relation(fields: [gymId], references: [id])
   attendance  Attendance[]
   payments    Payment[]
   memberPlans MemberPlan[]
+  memberships Membership[]
   user        User?
 
+  @@unique([gymId, memberNo])
   @@index([gymId])
-  @@index([gymId, endDate])
+}
+
+/// What a gym sells: a name, a price, and how many days it runs for.
+///
+/// Duration is in days rather than a monthly/quarterly/yearly enum so the
+/// arithmetic is unambiguous — "31 January + 1 month" has no single right
+/// answer, "31 January + 30 days" has exactly one.
+model MembershipPlan {
+  id           String   @id @default(uuid())
+  gymId        String
+  name         String
+  price        Float
+  durationDays Int
+  /// Retired plans stay for the memberships already sold under them; they
+  /// just stop being offered. Plans are never hard-deleted.
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  gym         Gym          @relation(fields: [gymId], references: [id])
+  memberships Membership[]
+
+  @@index([gymId])
+  @@index([gymId, isActive])
+}
+
+/// One thing a member bought, once. Renewing or upgrading creates another row
+/// rather than editing this one, so the member's history stays readable.
+model Membership {
+  id       String @id @default(uuid())
+  gymId    String
+  memberId String
+  planId   String
+
+  startDate  DateTime
+  /// Always startDate + plan.durationDays, computed on the server. The client
+  /// never sends this — an expiry date the front desk can type is an expiry
+  /// date the front desk can quietly extend.
+  expiryDate DateTime
+  /// What the expiry was before anyone extended it. Set once at creation and
+  /// never touched again, so a granted extension is always visible as the gap
+  /// between the two.
+  originalExpiryDate DateTime
+
+  /// The plan's price at the moment of sale. Snapshotted because changing a
+  /// plan's price must not silently rewrite what past members were charged.
+  pricePaid Float
+
+  status MembershipStatus @default(active)
+
+  /// Written by the extension flow in a later phase; created here so the
+  /// column exists before anything needs to fill it.
+  extendedDays    Int     @default(0)
+  extensionReason String?
+  extendedBy      String?
+
+  createdAt DateTime @default(now())
+
+  gym    Gym            @relation(fields: [gymId], references: [id])
+  member Member         @relation(fields: [memberId], references: [id])
+  plan   MembershipPlan @relation(fields: [planId], references: [id])
+
+  @@index([gymId])
+  @@index([memberId])
+  @@index([gymId, status])
+  @@index([gymId, expiryDate])
 }
 
 model Attendance {
@@ -154,6 +258,47 @@ model MemberPlan {
   dietPlan    DietPlan?    @relation(fields: [dietPlanId], references: [id])
 
   @@index([memberId])
+}
+
+/// Who did what, when. Written on every mutation that changes gym data.
+///
+/// The actor's name and role are copied in rather than joined from User: an
+/// audit trail has to stay readable after the account that made the entry is
+/// renamed, deactivated or deleted, which is exactly when someone is most
+/// likely to be reading it.
+model AuditLog {
+  id    String @id @default(uuid())
+  gymId String
+
+  actorId   String
+  actorName String
+  actorRole Role
+
+  /// Dotted verb, e.g. `member.create`, `membership.create`, `plan.deactivate`.
+  action String
+  /// The kind of thing acted on, e.g. `member`, `membership`, `plan`.
+  entity   String
+  entityId String
+  /// Human-readable stand-in for the entity ("Ali Khan"), so the log reads
+  /// without a lookup even if the row it points at is gone.
+  entityLabel String?
+
+  /// Only the fields that changed — a log that dumps whole rows is a log
+  /// nobody reads.
+  before Json?
+  after  Json?
+
+  /// Why, where the action calls for a justification (an expiry extension,
+  /// a correction). Free text.
+  reason String?
+
+  createdAt DateTime @default(now())
+
+  gym Gym @relation(fields: [gymId], references: [id])
+
+  @@index([gymId, createdAt])
+  @@index([gymId, entity, createdAt])
+  @@index([gymId, actorId, createdAt])
 }
 
 model Supplement {

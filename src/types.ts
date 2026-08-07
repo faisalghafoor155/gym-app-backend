@@ -14,12 +14,20 @@ export interface AuthedRequest<
   gymId: string;
   userId: string;
   role: Role;
+  /** The actor's display name, carried so audit entries can copy it in
+   *  without a second lookup on every mutation. */
+  actorName: string;
   /** Set only when the account belongs to a gym member. */
   memberId: string | null;
 }
 
 export interface JwtPayload {
   userId: string;
+  /**
+   * The account's `tokenVersion` at the moment this token was signed. The auth
+   * middleware rejects the token once the stored version moves past it.
+   */
+  tokenVersion: number;
 }
 
 /**
