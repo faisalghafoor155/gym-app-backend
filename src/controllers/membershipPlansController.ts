@@ -1,6 +1,7 @@
 import type { Response } from 'express';
 import prisma from '../db.js';
 import { audit, diff } from '../services/audit.js';
+import { withMoney } from '../services/money.js';
 import type { AuthedRequest } from '../types.js';
 import type {
   CreateMembershipPlanBody, UpdateMembershipPlanBody, MembershipPlanQuery, IdParam,
@@ -19,7 +20,7 @@ export const getAll = async (
       // Offered plans first, then retired ones, cheapest first within each.
       orderBy: [{ isActive: 'desc' }, { durationDays: 'asc' }],
     });
-    res.json(plans);
+    res.json(plans.map(p => withMoney(p, 'price')));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
@@ -44,7 +45,7 @@ export const create = async (
       after: { name, price, durationDays },
     });
 
-    res.status(201).json(plan);
+    res.status(201).json(withMoney(plan, 'price'));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
@@ -94,7 +95,7 @@ export const update = async (
       });
     }
 
-    res.json(plan);
+    res.json(withMoney(plan, 'price'));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
@@ -122,7 +123,7 @@ export const deactivate = async (
 
     // Already retired: nothing to do, and no audit entry for a non-event.
     if (!existing.isActive) {
-      res.json(existing);
+      res.json(withMoney(existing, 'price'));
       return;
     }
 
@@ -140,7 +141,7 @@ export const deactivate = async (
       after: { isActive: false },
     });
 
-    res.json(plan);
+    res.json(withMoney(plan, 'price'));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });

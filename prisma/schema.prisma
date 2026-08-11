@@ -13,6 +13,16 @@ enum Role {
   member
 }
 
+/// What a payment was for. Kept alongside the optional `membershipId` rather
+/// than derived from it: a membership payment always names its membership, but
+/// a supplement sale or a registration fee has nothing to point at, and
+/// "no membership" is not the same fact as "not for a membership".
+enum PaymentType {
+  membership
+  supplement
+  other
+}
+
 /// What a membership currently is. `expiring` is deliberately absent: it is a
 /// function of today's date, so storing it would need a job to keep every row
 /// honest. It is derived on read instead, and is therefore always right.
@@ -47,6 +57,7 @@ model Gym {
   workoutPlans    WorkoutPlan[]
   dietPlans       DietPlan[]
   supplements     Supplement[]
+  supplementSales SupplementSale[]
   membershipPlans MembershipPlan[]
   memberships     Membership[]
   auditLogs       AuditLog[]
@@ -91,8 +102,9 @@ model User {
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
-  gym    Gym     @relation(fields: [gymId], references: [id])
-  member Member? @relation(fields: [memberId], references: [id])
+  gym              Gym       @relation(fields: [gymId], references: [id])
+  member           Member?   @relation(fields: [memberId], references: [id])
+  recordedPayments Payment[] @relation("PaymentRecordedBy")
 
   @@index([gymId])
   @@index([gymId, role])
@@ -122,12 +134,13 @@ model Member {
   status    String   @default("active")
   createdAt DateTime @default(now())
 
-  gym         Gym          @relation(fields: [gymId], references: [id])
-  attendance  Attendance[]
-  payments    Payment[]
-  memberPlans MemberPlan[]
-  memberships Membership[]
-  user        User?
+  gym             Gym              @relation(fields: [gymId], references: [id])
+  attendance      Attendance[]
+  payments        Payment[]
+  memberPlans     MemberPlan[]
+  memberships     Membership[]
+  supplementSales SupplementSale[]
+  user            User?
 
   @@unique([gymId, memberNo])
   @@index([gymId])
@@ -142,7 +155,10 @@ model MembershipPlan {
   id           String   @id @default(uuid())
   gymId        String
   name         String
-  price        Float
+  /// Money is Decimal, never Float: a gym's books have to add up to the paisa,
+  /// and binary floating point cannot represent 0.1 exactly. Scale 2 matches
+  /// how prices are actually quoted.
+  price        Decimal  @db.Decimal(10, 2)
   durationDays Int
   /// Retired plans stay for the memberships already sold under them; they
   /// just stop being offered. Plans are never hard-deleted.
@@ -176,7 +192,7 @@ model Membership {
 
   /// The plan's price at the moment of sale. Snapshotted because changing a
   /// plan's price must not silently rewrite what past members were charged.
-  pricePaid Float
+  pricePaid Decimal @db.Decimal(10, 2)
 
   status MembershipStatus @default(active)
 
@@ -188,9 +204,10 @@ model Membership {
 
   createdAt DateTime @default(now())
 
-  gym    Gym            @relation(fields: [gymId], references: [id])
-  member Member         @relation(fields: [memberId], references: [id])
-  plan   MembershipPlan @relation(fields: [planId], references: [id])
+  gym      Gym            @relation(fields: [gymId], references: [id])
+  member   Member         @relation(fields: [memberId], references: [id])
+  plan     MembershipPlan @relation(fields: [planId], references: [id])
+  payments Payment[]
 
   @@index([gymId])
   @@index([memberId])
@@ -215,18 +232,48 @@ model Payment {
   id          String   @id @default(uuid())
   memberId    String
   gymId       String
-  amount      Float
+  amount      Decimal  @db.Decimal(10, 2)
   paymentDate DateTime @default(now())
   method      String   @default("cash")
   notes       String?
   status      String   @default("paid")
 
-  member Member @relation(fields: [memberId], references: [id])
-  gym    Gym    @relation(fields: [gymId], references: [id])
+  /// What the money was for.
+  type PaymentType @default(membership)
+
+  /// The membership this paid for, when there is one.
+  ///
+  /// Nullable on purpose: a supplement sale or a registration fee is real money
+  /// with no membership behind it, and a renewal that has not been sold yet is
+  /// recorded as due before the membership exists. Set it wherever it is known
+  /// — it is what turns "this member paid Rs. 2500" into "this member paid for
+  /// this membership", which is the difference between a cash log and books
+  /// that reconcile.
+  membershipId String?
+
+  /// Who took the money.
+  ///
+  /// Staff may record a fee but may not read the gym's books, so their view of
+  /// the payments list is narrowed to the rows they took themselves — this is
+  /// the column that narrows it. Nullable because rows predating the field have
+  /// no answer, and because the account can later be deleted: `onDelete:
+  /// SetNull` gives up the attribution rather than the payment, since deleting
+  /// a staff member must never delete the gym's money.
+  recordedById String?
+
+  member     Member          @relation(fields: [memberId], references: [id])
+  gym        Gym             @relation(fields: [gymId], references: [id])
+  membership Membership?     @relation(fields: [membershipId], references: [id])
+  recordedBy User?           @relation("PaymentRecordedBy", fields: [recordedById], references: [id], onDelete: SetNull)
+  sale       SupplementSale?
 
   @@index([gymId, status])
   @@index([gymId, paymentDate])
   @@index([memberId])
+  @@index([membershipId])
+  @@index([gymId, type])
+  /// Serves the staff-scoped list: their own takings, newest first.
+  @@index([gymId, recordedById, paymentDate])
 }
 
 model WorkoutPlan {
@@ -318,11 +365,57 @@ model Supplement {
   description String?
   dosage      String?
   timing      String?
-  price       Float?
+  price       Decimal? @db.Decimal(10, 2)
+  /// What is on the shelf right now. Only ever moved by a sale or a restock,
+  /// both of which leave a row behind — a stock number nobody can explain is
+  /// a stock number nobody trusts.
   stock       Int      @default(0)
   createdAt   DateTime @default(now())
 
-  gym Gym @relation(fields: [gymId], references: [id])
+  gym   Gym              @relation(fields: [gymId], references: [id])
+  sales SupplementSale[]
 
   @@index([gymId])
+}
+
+/// One sale across the counter.
+///
+/// Stock is not sliced into monthly buckets: what is on the shelf on the 1st is
+/// simply what was there on the 31st, so there is nothing to carry forward and
+/// no month-end job that can fail and leave the count wrong. "How much did we
+/// sell in March" is answered by filtering these rows on their date, which
+/// stays true no matter when it is asked.
+model SupplementSale {
+  id           String @id @default(uuid())
+  gymId        String
+  supplementId String
+
+  /// The buyer, when they are a member. Null for a walk-in — the gym still
+  /// took the money, and refusing to record it would be worse than not
+  /// knowing who paid.
+  memberId String?
+
+  quantity Int
+  /// The price per unit at the moment of sale, snapshotted so a later price
+  /// change cannot rewrite what somebody was charged.
+  unitPrice Decimal @db.Decimal(10, 2)
+  /// quantity x unitPrice, stored rather than derived so a report never has to
+  /// recompute money it is only reading.
+  total Decimal @db.Decimal(10, 2)
+
+  /// The payment this sale produced, when it was made to a member. Walk-ins
+  /// have no member to hang a Payment on, so this stays null for them.
+  paymentId String? @unique
+
+  soldAt DateTime @default(now())
+  notes  String?
+
+  gym        Gym        @relation(fields: [gymId], references: [id])
+  supplement Supplement @relation(fields: [supplementId], references: [id])
+  member     Member?    @relation(fields: [memberId], references: [id])
+  payment    Payment?   @relation(fields: [paymentId], references: [id])
+
+  @@index([gymId, soldAt])
+  @@index([supplementId])
+  @@index([memberId])
 }

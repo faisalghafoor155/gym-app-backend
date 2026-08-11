@@ -1,8 +1,10 @@
 import type { Response } from 'express';
+import { Prisma } from '@prisma/client';
 import prisma from '../db.js';
 import {
   EXPIRING_SOON_DAYS, LAPSED_AFTER_DAYS, addDays, toView, withPlan,
 } from '../services/membership.js';
+import { sum } from '../services/money.js';
 import type { AuthedRequest } from '../types.js';
 
 const memberSummary = {
@@ -105,7 +107,10 @@ export const getStats = async (req: AuthedRequest, res: Response): Promise<void>
       isOwner
         ? prisma.payment.findMany({
             where: { gymId, status: 'paid', paymentDate: { gte: revenueSince } },
-            select: { amount: true, paymentDate: true },
+            // `type` comes along so this month's takings can be split by what
+            // they were for, rather than needing a second pass over the same
+            // rows.
+            select: { amount: true, paymentDate: true, type: true },
           })
         : Promise.resolve([]),
       isOwner
@@ -130,20 +135,24 @@ export const getStats = async (req: AuthedRequest, res: Response): Promise<void>
       ? startOfMonth(gym.createdAt)
       : revenueSince;
 
-    const revenueBuckets = new Map<string, number>();
+    // Accumulated in Decimal, not by adding floats: a month's revenue is the
+    // sum of every payment in it, and rounding each addition is how a total
+    // ends up a few paisa off the ledger it is supposed to reconcile with.
+    const revenueBuckets = new Map<string, Prisma.Decimal>();
     for (let m = new Date(firstMonth); m <= now; m.setMonth(m.getMonth() + 1)) {
-      revenueBuckets.set(monthKey(m), 0);
+      revenueBuckets.set(monthKey(m), new Prisma.Decimal(0));
     }
     for (const p of paymentRows) {
       const k = monthKey(p.paymentDate);
-      if (revenueBuckets.has(k)) {
-        revenueBuckets.set(k, revenueBuckets.get(k)! + p.amount);
+      const bucket = revenueBuckets.get(k);
+      if (bucket) {
+        revenueBuckets.set(k, bucket.plus(p.amount));
       }
     }
     const revenueByMonth = [...revenueBuckets].map(([month, total]) => ({
       month,
       label: new Date(`${month}-01T00:00:00`).toLocaleDateString('en-PK', { month: 'short' }),
-      total,
+      total: total.toNumber(),
     }));
 
     // Every day in the window gets a bucket, including the empty ones — a gap
@@ -169,6 +178,30 @@ export const getStats = async (req: AuthedRequest, res: Response): Promise<void>
 
     const thisMonth = revenueByMonth.at(-1)?.total ?? 0;
     const lastMonth = revenueByMonth.at(-2)?.total ?? 0;
+
+    // This calendar month broken down by what the money was for: the front desk
+    // takes membership fees and supplement money through the same till, and
+    // "we made X this month" is only useful next to what made it up.
+    //
+    // Counted from the 1st rather than the last 30 days — a month-end total
+    // that quietly includes part of the previous month is a total nobody can
+    // reconcile against their own books.
+    const monthStart = startOfMonth(now);
+    const monthRows = paymentRows.filter(p => p.paymentDate >= monthStart);
+    const byType = (t: 'membership' | 'supplement' | 'other'): number =>
+      sum(monthRows.filter(p => p.type === t).map(p => p.amount));
+
+    const monthToDate = {
+      from: monthStart,
+      to: now,
+      membership: byType('membership'),
+      supplement: byType('supplement'),
+      other: byType('other'),
+      // Summed from the rows rather than from the three figures above, so a
+      // payment type added later cannot silently drop out of the grand total.
+      total: sum(monthRows.map(p => p.amount)),
+      count: monthRows.length,
+    };
 
     res.json({
       totalMembers,
@@ -198,8 +231,11 @@ export const getStats = async (req: AuthedRequest, res: Response): Promise<void>
         revenue: {
           thisMonth,
           lastMonth,
-          dueTotal: dueAmount?._sum.amount ?? 0,
+          // `_sum` is summed by Postgres in numeric, so it arrives exact and
+          // only needs converting for the wire.
+          dueTotal: dueAmount?._sum.amount?.toNumber() ?? 0,
           byMonth: revenueByMonth,
+          monthToDate,
         },
       }),
     });

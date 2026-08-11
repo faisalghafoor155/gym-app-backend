@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import auth from '../middleware/auth.js';
 import validate from '../middleware/validate.js';
-import { requireOwner, requireStaff } from '../middleware/requireRole.js';
+import { requireOwner } from '../middleware/requireRole.js';
 import { authed } from '../types.js';
 import {
   idParam, createStaffSchema, createMemberLoginSchema,
@@ -15,14 +15,20 @@ const router = Router();
 
 router.use(auth);
 
-// Staff can see who has access, but only the owner can change it.
-router.get('/', requireStaff, authed(getAll));
+// Every route here is the owner's: who can sign in to the gym, and what they
+// may do. The list alone carries each account's name, email and role, which is
+// not something the front desk needs to run the day — so it is gated with the
+// rest rather than left open. Enforced here rather than only by hiding the
+// page, because a hidden nav link is not access control.
+router.use(requireOwner);
 
-router.post('/staff', requireOwner, validate(createStaffSchema), authed(createStaff));
-router.post('/member-login', requireOwner, validate(createMemberLoginSchema), authed(createMemberLogin));
-router.post('/transfer-ownership', requireOwner, validate(transferOwnershipSchema), authed(transferOwnership));
+router.get('/', authed(getAll));
 
-router.put('/:id', requireOwner, validate(idParam, 'params'), validate(updateUserSchema), authed(update));
-router.delete('/:id', requireOwner, validate(idParam, 'params'), authed(remove));
+router.post('/staff', validate(createStaffSchema), authed(createStaff));
+router.post('/member-login', validate(createMemberLoginSchema), authed(createMemberLogin));
+router.post('/transfer-ownership', validate(transferOwnershipSchema), authed(transferOwnership));
+
+router.put('/:id', validate(idParam, 'params'), validate(updateUserSchema), authed(update));
+router.delete('/:id', validate(idParam, 'params'), authed(remove));
 
 export default router;

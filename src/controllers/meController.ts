@@ -1,6 +1,7 @@
 import type { Response } from 'express';
 import prisma from '../db.js';
 import { toView, withPlan } from '../services/membership.js';
+import { sum, withMoney } from '../services/money.js';
 import type { AuthedRequest } from '../types.js';
 
 /**
@@ -63,8 +64,8 @@ export const getMyProfile = async (req: AuthedRequest, res: Response): Promise<v
       },
       plan,
       attendance,
-      payments,
-      dueTotal: payments.filter(p => p.status === 'due').reduce((sum, p) => sum + p.amount, 0),
+      payments: payments.map(p => withMoney(p, 'amount')),
+      dueTotal: sum(payments.filter(p => p.status === 'due').map(p => p.amount)),
     });
   } catch (err) {
     console.error(err);

@@ -1,4 +1,4 @@
-import type { Role } from '@prisma/client';
+import { Prisma, type Role } from '@prisma/client';
 import prisma from '../db.js';
 import type { AuthedRequest } from '../types.js';
 
@@ -25,6 +25,9 @@ const scrub = (value: unknown): unknown => {
   if (value === null || typeof value !== 'object') return value;
   if (Array.isArray(value)) return value.map(scrub);
   if (value instanceof Date) return value;
+  // A Decimal would otherwise be walked as a plain object and stored as its
+  // internal digit representation, which is unreadable in a log.
+  if (value instanceof Prisma.Decimal) return value.toNumber();
 
   return Object.fromEntries(
     Object.entries(value as Record<string, unknown>)
@@ -84,11 +87,14 @@ export const diff = <T extends Record<string, unknown>>(
   for (const f of fields) {
     const from = before[f];
     const to = after[f];
-    // Dates compare by identity otherwise, so two equal dates would read as a
-    // change on every save.
+    // Dates and Decimals are objects, so `===` compares identity: two equal
+    // values would otherwise read as a change on every single save, and the
+    // log would fill with edits that never happened.
     const same = from instanceof Date && to instanceof Date
       ? from.getTime() === to.getTime()
-      : from === to;
+      : from instanceof Prisma.Decimal && to instanceof Prisma.Decimal
+        ? from.equals(to)
+        : from === to;
     if (!same) { b[f] = from; a[f] = to; }
   }
 

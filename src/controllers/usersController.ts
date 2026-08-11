@@ -1,5 +1,6 @@
 import type { Response } from 'express';
 import bcrypt from 'bcryptjs';
+import type { Prisma } from '@prisma/client';
 import prisma from '../db.js';
 import { setSessionCookie } from '../services/session.js';
 import { audit, diff } from '../services/audit.js';
@@ -14,6 +15,24 @@ const publicFields = {
   id: true, name: true, email: true, role: true,
   isActive: true, memberId: true, lastLoginAt: true, createdAt: true,
 } as const;
+
+/**
+ * How many staff accounts one gym may have.
+ *
+ * Counts deactivated accounts too. A revoked account still holds its email
+ * address — the unique constraint means nobody else can be invited on it — and
+ * can be restored in one click, so it is a seat that is taken. Freeing it is
+ * what deleting the account is for, and the error says so.
+ *
+ * The owner is not counted: they are the gym, not one of its helpers.
+ */
+export const STAFF_SEATS = 6;
+
+/** Staff seats used and left, for the client to render before it asks. */
+const seatUsage = async (gymId: string) => {
+  const used = await prisma.user.count({ where: { gymId, role: 'staff' } });
+  return { limit: STAFF_SEATS, used, remaining: Math.max(0, STAFF_SEATS - used) };
+};
 
 const gymName = async (gymId: string): Promise<string> => {
   const gym = await prisma.gym.findUnique({
@@ -38,19 +57,52 @@ const inviteInfo = (invite: { link: string; emailed: boolean } | null) => {
     : { emailed: false as const, link: invite.link };
 };
 
-/** Everyone who can sign in to this gym. */
+/** Everyone who can sign in to this gym, and how many staff seats are left. */
 export const getAll = async (req: AuthedRequest, res: Response): Promise<void> => {
   try {
-    const users = await prisma.user.findMany({
-      where: { gymId: req.gymId },
-      select: { ...publicFields, member: { select: { id: true, name: true } } },
-      orderBy: [{ role: 'asc' }, { createdAt: 'desc' }],
-    });
-    res.json(users);
+    const [users, seats] = await Promise.all([
+      prisma.user.findMany({
+        where: { gymId: req.gymId },
+        select: { ...publicFields, member: { select: { id: true, name: true } } },
+        orderBy: [{ role: 'asc' }, { createdAt: 'desc' }],
+      }),
+      seatUsage(req.gymId),
+    ]);
+    // Seats travel with the list so the page can say "2 left" before the owner
+    // fills in a form that would be refused. The server still refuses it —
+    // this is the courtesy, not the rule.
+    res.json({ users, seats });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
   }
+};
+
+/** Raised when the gym has no staff seat left, so the transaction rolls back
+ *  rather than creating a seventh account. */
+class SeatsFullError extends Error {}
+
+/**
+ * Takes the gym's seat lock, then refuses if it is full.
+ *
+ * The lock is the whole point. Counting inside a transaction is *not* enough on
+ * its own: under Postgres' default READ COMMITTED, two concurrent invites each
+ * run their own `count`, neither sees the other's uncommitted row, both read
+ * five seats used, and both commit — which is exactly what a race test does to
+ * an unlocked version of this.
+ *
+ * `SELECT ... FOR UPDATE` on the Gym row makes the second caller wait for the
+ * first to commit before it counts, so the count it reads is the one it acts
+ * on. Locking the gym rather than the user rows is deliberate: the rows being
+ * counted do not exist yet, so there is nothing else to take a lock on.
+ *
+ * Contention is per-gym and held for one insert, so this costs nothing in
+ * practice — two owners at different gyms never wait on each other.
+ */
+const claimStaffSeat = async (tx: Prisma.TransactionClient, gymId: string): Promise<void> => {
+  await tx.$queryRaw`SELECT id FROM "Gym" WHERE id = ${gymId} FOR UPDATE`;
+  const used = await tx.user.count({ where: { gymId, role: 'staff' } });
+  if (used >= STAFF_SEATS) throw new SeatsFullError();
 };
 
 /** Owner-only: add a helper/employee who can run the gym day to day. */
@@ -65,15 +117,24 @@ export const createStaff = async (
       return;
     }
 
-    const user = await prisma.user.create({
-      data: {
-        gymId: req.gymId, name, email,
-        // Null without a password: the account exists but cannot sign in until
-        // the invite is accepted.
-        passwordHash: password ? await bcrypt.hash(password, 10) : null,
-        role: 'staff',
-      },
-      select: publicFields,
+    // Hashing is deliberately outside the transaction: bcrypt takes ~100ms and
+    // holding a transaction open for it would serialise every other write to
+    // this gym behind a CPU-bound loop.
+    const passwordHash = password ? await bcrypt.hash(password, 10) : null;
+
+    const user = await prisma.$transaction(async tx => {
+      await claimStaffSeat(tx, req.gymId);
+
+      return tx.user.create({
+        data: {
+          gymId: req.gymId, name, email,
+          // Null without a password: the account exists but cannot sign in
+          // until the invite is accepted.
+          passwordHash,
+          role: 'staff',
+        },
+        select: publicFields,
+      });
     });
 
     const invite = password
@@ -93,8 +154,18 @@ export const createStaff = async (
       after: { name, email, role: 'staff', method: password ? 'password' : 'invite' },
     });
 
-    res.status(201).json({ ...user, invite: inviteInfo(invite) });
+    res.status(201).json({
+      ...user,
+      invite: inviteInfo(invite),
+      seats: await seatUsage(req.gymId),
+    });
   } catch (err) {
+    if (err instanceof SeatsFullError) {
+      res.status(409).json({
+        error: `This gym can have ${STAFF_SEATS} staff accounts, and all ${STAFF_SEATS} are in use. Remove one to free a seat — revoked accounts still hold theirs.`,
+      });
+      return;
+    }
     console.error(err);
     res.status(500).json({ error: 'Server error' });
   }
@@ -159,13 +230,13 @@ export const createMemberLogin = async (
   }
 };
 
-/** Owner-only: deactivate/reactivate an account or rename it. */
+/** Owner-only: rename an account, change what it may do, or switch it off. */
 export const update = async (
   req: AuthedRequest<IdParam, unknown, UpdateUserBody>,
   res: Response,
 ): Promise<void> => {
   const { id } = req.params;
-  const { name, isActive } = req.body;
+  const { name, isActive, role } = req.body;
   try {
     const target = await prisma.user.findFirst({ where: { id, gymId: req.gymId } });
     if (!target) {
@@ -177,25 +248,59 @@ export const update = async (
       res.status(400).json({ error: 'The owner account cannot be deactivated' });
       return;
     }
+    // Demoting the owner here would leave the gym with nobody who can manage
+    // it — and unlike transfer-ownership there is no replacement in the same
+    // breath. The schema already refuses to promote anyone *to* owner, so this
+    // is the other half of the same rule.
+    if (target.role === 'owner' && role) {
+      res.status(400).json({
+        error: 'The owner cannot be demoted. Transfer ownership instead.',
+      });
+      return;
+    }
+    // A member login is the account attached to a Member record, and that link
+    // is what `/my` reads. Promoting it to staff would leave a staff account
+    // still wired to one member's data; dropping the link instead would strand
+    // the member. Neither is a change the owner can have meant.
+    if (role && role !== target.role && target.memberId) {
+      res.status(400).json({
+        error: 'A member login cannot change role. Remove it and invite a staff account instead.',
+      });
+      return;
+    }
 
-    // Deactivating has to reach the sessions that account already has open.
-    // `auth` would catch it on the next request anyway via `isActive`, but
-    // bumping the version keeps one rule — a revoked token is a stale token —
-    // rather than two ways for a session to die. Reactivating leaves the
-    // version alone; there is nothing live to strand.
-    const revoke = isActive === false;
+    // Both of these have to reach the sessions that account already has open.
+    //
+    // Deactivating: `auth` would catch it next request anyway via `isActive`,
+    // but bumping the version keeps one rule — a revoked token is a stale token
+    // — rather than two ways for a session to die.
+    //
+    // A role change: `auth` re-reads the role from the database on every
+    // request, so a demoted staff member loses access immediately either way.
+    // The bump is what closes the gap for a *promotion* going the other way,
+    // and keeps the rule uniform rather than "sometimes we re-issue".
+    // Reactivating alone leaves the version alone; there is nothing to strand.
+    const revoke = isActive === false || (role !== undefined && role !== target.role);
 
-    const user = await prisma.user.update({
-      where: { id },
-      data: {
-        ...(name && { name }),
-        ...(isActive !== undefined && { isActive }),
-        ...(revoke && { tokenVersion: { increment: 1 } }),
-      },
-      select: publicFields,
+    // Promoting somebody to staff takes a seat, exactly as creating one does,
+    // so it is counted and applied in one transaction for the same reason.
+    const promoting = role === 'staff' && target.role !== 'staff';
+
+    const user = await prisma.$transaction(async tx => {
+      if (promoting) await claimStaffSeat(tx, req.gymId);
+      return tx.user.update({
+        where: { id },
+        data: {
+          ...(name && { name }),
+          ...(isActive !== undefined && { isActive }),
+          ...(role && { role }),
+          ...(revoke && { tokenVersion: { increment: 1 } }),
+        },
+        select: publicFields,
+      });
     });
 
-    const changed = diff(target, user, ['name', 'isActive'] as const);
+    const changed = diff(target, user, ['name', 'isActive', 'role'] as const);
     if (changed) {
       await audit(req, {
         action: 'staff.update',
@@ -208,6 +313,12 @@ export const update = async (
 
     res.json(user);
   } catch (err) {
+    if (err instanceof SeatsFullError) {
+      res.status(409).json({
+        error: `This gym can have ${STAFF_SEATS} staff accounts, and all ${STAFF_SEATS} are in use. Remove one to free a seat — revoked accounts still hold theirs.`,
+      });
+      return;
+    }
     console.error(err);
     res.status(500).json({ error: 'Server error' });
   }

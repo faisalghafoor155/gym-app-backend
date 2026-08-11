@@ -1,4 +1,4 @@
-import type { MembershipStatus } from '@prisma/client';
+import type { MembershipStatus, Prisma } from '@prisma/client';
 
 /** The window in which a membership is worth warning somebody about. */
 export const EXPIRING_SOON_DAYS = 7;
@@ -99,6 +99,7 @@ export interface MembershipView {
   pricePaid: number;
   durationDays: number;
   extendedDays: number;
+  extensionReason: string | null;
   status: DisplayStatus;
   daysLeft: number;
 }
@@ -109,8 +110,10 @@ type MembershipWithPlan = {
   startDate: Date;
   expiryDate: Date;
   originalExpiryDate: Date;
-  pricePaid: number;
+  /** Decimal in the database; `toView` is where it becomes a number. */
+  pricePaid: Prisma.Decimal;
   extendedDays: number;
+  extensionReason: string | null;
   status: MembershipStatus;
   plan: { name: string; durationDays: number };
 };
@@ -124,9 +127,10 @@ export const toView = (m: MembershipWithPlan, now: Date = new Date()): Membershi
   startDate: m.startDate,
   expiryDate: m.expiryDate,
   originalExpiryDate: m.originalExpiryDate,
-  pricePaid: m.pricePaid,
+  pricePaid: m.pricePaid.toNumber(),
   durationDays: m.plan.durationDays,
   extendedDays: m.extendedDays,
+  extensionReason: m.extensionReason,
   status: displayStatus(m, now),
   daysLeft: daysUntil(m.expiryDate, now),
 });

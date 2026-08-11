@@ -3,7 +3,9 @@ import prisma from '../db.js';
 import { audit } from '../services/audit.js';
 import { addDays, toView, withPlan } from '../services/membership.js';
 import type { AuthedRequest } from '../types.js';
-import type { CreateMembershipBody, IdParam } from '../schemas.js';
+import type {
+  CreateMembershipBody, ExtendMembershipBody, IdParam, MembershipParams,
+} from '../schemas.js';
 
 /** Everything this member has ever bought, newest first. */
 export const getHistory = async (
@@ -123,6 +125,85 @@ export const create = async (
     });
 
     res.status(201).json(toView(membership));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * Grants extra days on a membership the member already has.
+ *
+ * This is the only route that moves an expiry date. Selling a membership
+ * derives the expiry from the plan's duration and refuses a client-supplied
+ * one, so every day a member has beyond what they paid for arrives through
+ * here — with a reason, an actor and an audit row attached. That is what makes
+ * `expiryDate - originalExpiryDate` a number the owner can trust.
+ *
+ * Owner-only, because free days are money.
+ */
+export const extend = async (
+  req: AuthedRequest<MembershipParams, unknown, ExtendMembershipBody>,
+  res: Response,
+): Promise<void> => {
+  const { id: memberId, membershipId } = req.params;
+  const { days, reason } = req.body;
+  try {
+    // Scoped by member and gym as well as id: a valid membership id belonging
+    // to somebody else must read as missing, not as forbidden.
+    const membership = await prisma.membership.findFirst({
+      where: { id: membershipId, memberId, gymId: req.gymId },
+      include: {
+        ...withPlan,
+        member: { select: { name: true, memberNo: true } },
+      },
+    });
+    if (!membership) {
+      res.status(404).json({ error: 'Membership not found' });
+      return;
+    }
+
+    // Superseded and cancelled memberships are closed history. Extending one
+    // would either resurrect a membership somebody deliberately called off, or
+    // move the expiry on a row that a newer membership has already replaced.
+    if (membership.status === 'superseded' || membership.status === 'cancelled') {
+      res.status(400).json({ error: 'That membership can no longer be extended' });
+      return;
+    }
+
+    const newExpiry = addDays(membership.expiryDate, days);
+
+    const updated = await prisma.membership.update({
+      where: { id: membership.id },
+      data: {
+        expiryDate: newExpiry,
+        // Accumulates, so the total granted across every extension stays
+        // readable next to originalExpiryDate, which is never touched.
+        extendedDays: { increment: days },
+        extensionReason: reason,
+        extendedBy: req.userId,
+      },
+      include: withPlan,
+    });
+
+    await audit(req, {
+      action: 'membership.extend',
+      entity: 'membership',
+      entityId: membership.id,
+      entityLabel: `${membership.member.memberNo} · ${membership.member.name} · ${membership.plan.name}`,
+      before: {
+        expiryDate: membership.expiryDate,
+        extendedDays: membership.extendedDays,
+      },
+      after: {
+        expiryDate: newExpiry,
+        extendedDays: updated.extendedDays,
+        days,
+      },
+      reason,
+    });
+
+    res.json(toView(updated));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });

@@ -30,6 +30,7 @@ const date = z.coerce.date({ error: 'must be a valid date' });
 export const GENDERS = ['male', 'female', 'other'] as const;
 export const PAYMENT_METHODS = ['cash', 'online'] as const;
 export const PAYMENT_STATUSES = ['paid', 'due'] as const;
+export const PAYMENT_TYPES = ['membership', 'supplement', 'other'] as const;
 export const SUPPLEMENT_CATEGORIES = [
   'protein', 'creatine', 'preworkout', 'bcaa', 'vitamins', 'fatburner', 'other',
 ] as const;
@@ -45,6 +46,9 @@ const photo = z.string()
 // --- params ------------------------------------------------------------
 
 export const idParam = z.object({ id: uuid });
+
+/** A membership hangs off a member, so its routes carry both ids. */
+export const membershipParams = z.object({ id: uuid, membershipId: uuid });
 
 // --- auth --------------------------------------------------------------
 
@@ -106,9 +110,19 @@ export const acceptInviteSchema = z.object({
   password,
 });
 
+/**
+ * Roles the owner may assign to somebody else.
+ *
+ * `owner` is absent on purpose: promoting a second owner is what
+ * transfer-ownership does, in one transaction, so the gym is never left with
+ * two owners or none. Allowing it here would be a second, unguarded way in.
+ */
+export const ASSIGNABLE_ROLES = ['staff', 'member'] as const;
+
 export const updateUserSchema = z.object({
   name: name.optional(),
   isActive: z.boolean().optional(),
+  role: z.enum(ASSIGNABLE_ROLES, { error: 'must be staff or member' }).optional(),
 });
 
 export const transferOwnershipSchema = z.object({ userId: uuid });
@@ -191,6 +205,21 @@ export const createMembershipSchema = z.object({
   startDate: date.optional(),
 });
 
+/**
+ * Granting extra days. Only ever forwards — shortening an expiry is a
+ * different action with different trust implications, and is not this route's
+ * job. The reason is required because the audit entry is the entire point:
+ * free days are money, and money given away needs a why next to it.
+ */
+export const extendMembershipSchema = z.object({
+  days: z.coerce
+    .number({ error: 'must be a number' })
+    .int('must be a whole number')
+    .min(1, 'must be at least 1 day')
+    .max(365, 'cannot be more than 365 days'),
+  reason: z.string().trim().min(3, 'is required').max(200, 'is too long'),
+});
+
 // --- audit logs --------------------------------------------------------
 
 export const auditLogQuerySchema = z.object({
@@ -217,6 +246,11 @@ export const createPaymentSchema = z.object({
   amount: money.refine(v => v > 0, 'must be greater than zero'),
   method: z.enum(PAYMENT_METHODS, { error: 'must be cash or online' }).optional(),
   status: z.enum(PAYMENT_STATUSES, { error: 'must be paid or due' }).optional(),
+  type: z.enum(PAYMENT_TYPES, { error: 'is not a valid payment type' }).optional(),
+  // Which membership this settles. The controller checks it belongs to this
+  // gym and to the member being paid for; null is a legitimate answer for
+  // money that has no membership behind it.
+  membershipId: uuid.nullish(),
   notes: optionalText(500),
   paymentDate: date.optional(),
 });
@@ -232,12 +266,16 @@ export const updatePaymentSchema = z.object({
   amount: money.refine(v => v > 0, 'must be greater than zero').optional(),
   method: z.enum(PAYMENT_METHODS, { error: 'must be cash or online' }).optional(),
   status: z.enum(PAYMENT_STATUSES, { error: 'must be paid or due' }).optional(),
+  type: z.enum(PAYMENT_TYPES, { error: 'is not a valid payment type' }).optional(),
+  membershipId: uuid.nullish(),
   notes: optionalText(500),
   paymentDate: date.optional(),
 });
 
 export const paymentQuerySchema = z.object({
   status: z.enum(PAYMENT_STATUSES, { error: 'must be paid or due' })
+    .or(blankToUndefined).optional(),
+  type: z.enum(PAYMENT_TYPES, { error: 'is not a valid payment type' })
     .or(blankToUndefined).optional(),
   search: z.string().trim().max(100, 'is too long')
     .transform(v => v || undefined).optional(),
@@ -282,6 +320,45 @@ export const updateSupplementSchema = z.object({
   category: supplementBase.category.optional(),
 });
 
+/**
+ * Selling across the counter. The price is not accepted from the client: it is
+ * read from the supplement, the same reason a membership's expiry is derived
+ * on the server. A price the front desk can type is a price the front desk can
+ * quietly discount.
+ */
+export const sellSupplementSchema = z.object({
+  quantity: z.coerce
+    .number({ error: 'must be a number' })
+    .int('must be a whole number')
+    .min(1, 'must be at least 1')
+    .max(1000, 'is unrealistically large'),
+  /// Null for a walk-in: the gym still took the money.
+  memberId: uuid.nullish(),
+  notes: optionalText(500),
+  soldAt: date.optional(),
+});
+
+/** Stock arriving from a supplier. Separate from `update` so restocking is an
+ *  event with a reason, not an untraceable edit to a number. */
+export const restockSupplementSchema = z.object({
+  quantity: z.coerce
+    .number({ error: 'must be a number' })
+    .int('must be a whole number')
+    .min(1, 'must be at least 1')
+    .max(100_000, 'is unrealistically large'),
+  notes: optionalText(500),
+});
+
+/** How many months of history the sales report covers. */
+export const salesReportQuerySchema = z.object({
+  months: z.coerce.number().int().min(1).max(24).default(6),
+});
+
+/** Same window as the sales report, so the two pages line up month for month. */
+export const paymentSummaryQuerySchema = z.object({
+  months: z.coerce.number().int().min(1).max(24).default(6),
+});
+
 // --- inferred request-body types ---------------------------------------
 
 export type RegisterBody = z.infer<typeof registerSchema>;
@@ -301,15 +378,21 @@ export type CreateMembershipPlanBody = z.infer<typeof createMembershipPlanSchema
 export type UpdateMembershipPlanBody = z.infer<typeof updateMembershipPlanSchema>;
 export type MembershipPlanQuery = z.infer<typeof membershipPlanQuerySchema>;
 export type CreateMembershipBody = z.infer<typeof createMembershipSchema>;
+export type ExtendMembershipBody = z.infer<typeof extendMembershipSchema>;
+export type MembershipParams = z.infer<typeof membershipParams>;
 export type AuditLogQuery = z.infer<typeof auditLogQuerySchema>;
 export type CheckinBody = z.infer<typeof checkinSchema>;
 export type CreatePaymentBody = z.infer<typeof createPaymentSchema>;
 export type UpdatePaymentBody = z.infer<typeof updatePaymentSchema>;
 export type PaymentQuery = z.infer<typeof paymentQuerySchema>;
+export type PaymentSummaryQuery = z.infer<typeof paymentSummaryQuerySchema>;
 export type CreatePlanBody = z.infer<typeof createPlanSchema>;
 export type AssignPlanBody = z.infer<typeof assignPlanSchema>;
 export type CreateSupplementBody = z.infer<typeof createSupplementSchema>;
 export type UpdateSupplementBody = z.infer<typeof updateSupplementSchema>;
+export type SellSupplementBody = z.infer<typeof sellSupplementSchema>;
+export type RestockSupplementBody = z.infer<typeof restockSupplementSchema>;
+export type SalesReportQuery = z.infer<typeof salesReportQuerySchema>;
 export type IdParam = z.infer<typeof idParam>;
 
 export type Gender = (typeof GENDERS)[number];
