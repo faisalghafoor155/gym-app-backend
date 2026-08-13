@@ -27,6 +27,11 @@ const startOfDay = (d: Date): Date => {
 const startOfMonth = (from: Date, back = 0): Date =>
   new Date(from.getFullYear(), from.getMonth() - back, 1);
 
+/** Last instant of `from`'s month. Day 0 of the next month is the last day of
+ *  this one, which sidesteps 28/29/30/31 entirely. */
+const endOfMonth = (from: Date): Date =>
+  new Date(from.getFullYear(), from.getMonth() + 1, 0, 23, 59, 59, 999);
+
 /** `2026-08` — the key both the bucketing and the chart agree on, built from
  *  local parts so it does not shift a payment into the wrong month the way
  *  toISOString would for anywhere east of UTC. */
@@ -62,7 +67,7 @@ export const getStats = async (req: AuthedRequest, res: Response): Promise<void>
       totalMembers, activeMembers, expiringMemberships,
       todayAttendance, recentMembers, duePayments,
       followUpMemberships, lapsedCount,
-      attendanceRows, paymentRows, dueAmount, gym,
+      attendanceRows, paymentRows, dueAmount, monthMemberships, gym,
     ] = await Promise.all([
       prisma.member.count({ where: { gymId } }),
       prisma.membership.count({ where: { ...live, expiryDate: { gt: soon } } }),
@@ -119,6 +124,25 @@ export const getStats = async (req: AuthedRequest, res: Response): Promise<void>
             _sum: { amount: true },
           })
         : Promise.resolve(null),
+
+      // This month's collection, member by member — who has settled and who
+      // has not. Read from memberships rather than payments for the same
+      // reason the monthly report is: a member who has paid nothing has no
+      // payment row, and they are precisely the ones this counts.
+      isOwner
+        ? prisma.membership.findMany({
+            where: {
+              gymId,
+              status: { in: ['active', 'expired', 'suspended'] },
+              startDate: { lte: endOfMonth(now) },
+              expiryDate: { gte: startOfMonth(now) },
+            },
+            select: {
+              pricePaid: true,
+              payments: { where: { status: 'paid' }, select: { amount: true } },
+            },
+          })
+        : Promise.resolve([]),
 
       prisma.gym.findUniqueOrThrow({
         where: { id: gymId },
@@ -191,6 +215,33 @@ export const getStats = async (req: AuthedRequest, res: Response): Promise<void>
     const byType = (t: 'membership' | 'supplement' | 'other'): number =>
       sum(monthRows.filter(p => p.type === t).map(p => p.amount));
 
+    /**
+     * This month's collection as a head count, not just an amount.
+     *
+     * "Rs. 40,000 came in" does not answer the question the owner actually
+     * asks at month end, which is how many members have settled and how many
+     * are still to come. Both are counted from the same set of memberships, so
+     * `settled + pending` is always the number of members who owed anything
+     * this month — the two can never disagree.
+     */
+    const collection = monthMemberships.reduce(
+      (acc, m) => {
+        const paid = sum(m.payments.map(p => p.amount));
+        const expected = m.pricePaid.toNumber();
+        const short = Math.max(0, expected - paid);
+        acc.expected += expected;
+        acc.collected += Math.min(paid, expected);
+        if (short > 0) {
+          acc.pending += 1;
+          acc.shortfall += short;
+        } else {
+          acc.settled += 1;
+        }
+        return acc;
+      },
+      { settled: 0, pending: 0, collected: 0, shortfall: 0, expected: 0 },
+    );
+
     const monthToDate = {
       from: monthStart,
       to: now,
@@ -236,6 +287,9 @@ export const getStats = async (req: AuthedRequest, res: Response): Promise<void>
           dueTotal: dueAmount?._sum.amount?.toNumber() ?? 0,
           byMonth: revenueByMonth,
           monthToDate,
+          // Who has paid this month and who has not — the same figures the
+          // Monthly Collection page reports, so the two never disagree.
+          collection,
         },
       }),
     });
