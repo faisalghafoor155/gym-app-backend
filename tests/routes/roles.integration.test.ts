@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import prisma from '../db.js';
-import { addMember, addUser, api, makeGym, resetDb } from '../test/helpers.js';
+import prisma from '../../src/db.js';
+import { addMember, addUser, api, makeGym, resetDb } from '../helpers.js';
 
 /**
  * Role boundaries: owner > staff > member.

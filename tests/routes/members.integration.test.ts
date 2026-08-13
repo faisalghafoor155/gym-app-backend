@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 
-import { api, resetDb, makeGym, addMember, addMembership, addPlan } from '../test/helpers.js';
+import prisma from '../../src/db.js';
+import { api, resetDb, makeGym, addMember, addMembership, addPlan } from '../helpers.js';
 
 /**
  * The members list: paging, searching, and the status tabs.
@@ -304,7 +305,7 @@ describe('members list — all=true', () => {
     const owner = await makeGym();
     const m = await addMember(owner.gymId, { name: 'Has Photo' });
     // A data-URL of the kind the client stores, which can run to megabytes.
-    await (await import('../db.js')).default.member.update({
+    await prisma.member.update({
       where: { id: m.id },
       data: { photo: 'data:image/png;base64,AAAA' },
     });

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import prisma from '../db.js';
-import { addMember, addMembership, addPlan, api, makeGym, resetDb } from '../test/helpers.js';
+import prisma from '../../src/db.js';
+import { addMember, addMembership, addPlan, api, makeGym, resetDb } from '../helpers.js';
 
 /**
  * Check-in, and the two things it has to get right beyond writing a row.

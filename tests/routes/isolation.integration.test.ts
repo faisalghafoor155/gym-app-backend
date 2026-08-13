@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import prisma from '../db.js';
-import { addMember, addPlan, api, makeGym, resetDb } from '../test/helpers.js';
+import prisma from '../../src/db.js';
+import { addMember, addPlan, api, makeGym, resetDb } from '../helpers.js';
 
 /**
  * Tenant isolation: one gym must never be able to read or change another's

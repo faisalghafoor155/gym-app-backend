@@ -13,7 +13,7 @@ import {
   formatMemberNo,
   isLapsed,
   toView,
-} from './membership.js';
+} from '../../src/services/membership.js';
 
 /** A fixed "now" so these tests do not change meaning overnight. */
 const NOW = new Date('2026-06-15T12:00:00');

@@ -3,8 +3,8 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import request from 'supertest';
 
-import prisma from '../db.js';
-import app from '../index.js';
+import prisma from '../src/db.js';
+import app from '../src/index.js';
 
 /**
  * Shared fixtures for the integration suite.

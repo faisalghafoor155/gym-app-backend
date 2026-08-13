@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import bcrypt from 'bcryptjs';
 
-import prisma from '../db.js';
-import { api, addUser, cookieFor, makeGym, rawApi, resetDb } from '../test/helpers.js';
+import prisma from '../../src/db.js';
+import { api, addUser, cookieFor, makeGym, rawApi, resetDb } from '../helpers.js';
 
 beforeEach(resetDb);
 

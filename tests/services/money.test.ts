@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Prisma } from '@prisma/client';
 
-import { sum, toNumber, withMoney } from './money.js';
+import { sum, toNumber, withMoney } from '../../src/services/money.js';
 
 const d = (v: string | number) => new Prisma.Decimal(v);
 

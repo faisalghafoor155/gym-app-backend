@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi, afterEach } from 'vitest';
 
-import prisma from '../db.js';
-import { addMember, addMembership, addPlan, makeGym, resetDb } from '../test/helpers.js';
-import { runExpiryReminders } from './expiryReminders.js';
-import * as mail from '../services/mail.js';
+import prisma from '../../src/db.js';
+import { addMember, addMembership, addPlan, makeGym, resetDb } from '../helpers.js';
+import { runExpiryReminders } from '../../src/jobs/expiryReminders.js';
+import * as mail from '../../src/services/mail.js';
 
 /**
  * The daily expiry reminder.

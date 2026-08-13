@@ -1,0 +1,16 @@
+{
+  // The tests, typechecked but never built.
+  //
+  // tsconfig.json deliberately compiles only src/ — dist/ should hold the app
+  // and nothing else, and rootDir has to stay src/ for the output layout to
+  // come out flat. That would leave the tests unchecked, which is how a broken
+  // test file reaches CI and fails there instead of here, so they get their own
+  // config: same strictness, no emit.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    // Both trees, since a test importing from src/ has to see both.
+    "rootDir": "."
+  },
+  "include": ["tests/**/*.ts", "src/**/*.ts"]
+}

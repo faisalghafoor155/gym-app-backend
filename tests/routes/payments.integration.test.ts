@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import prisma from '../db.js';
-import { addDays } from '../services/membership.js';
-import { addMember, addPlan, addUser, api, makeGym, resetDb } from '../test/helpers.js';
+import prisma from '../../src/db.js';
+import { addDays } from '../../src/services/membership.js';
+import { addMember, addPlan, addUser, api, makeGym, resetDb } from '../helpers.js';
 
 /**
  * Money through the real stack: Decimal in the database, plain numbers over
