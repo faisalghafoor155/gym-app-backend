@@ -16,6 +16,7 @@ import attendanceRoutes from './routes/attendance.js';
 import paymentsRoutes from './routes/payments.js';
 import plansRoutes from './routes/plans.js';
 import supplementsRoutes from './routes/supplements.js';
+import { startJobs } from './jobs/index.js';
 
 // Fail loudly at boot rather than turning every login into a generic 500.
 for (const key of ['JWT_SECRET', 'DATABASE_URL'] as const) {
@@ -128,8 +129,11 @@ app.use(errorHandler);
 export default app;
 
 // Started only when run as the server. Importing this module (as the tests do)
-// must not bind a port, or a second import would fight the first for it.
+// must not bind a port, or a second import would fight the first for it. The
+// same applies to the scheduler: a background job firing mid-suite would write
+// rows no test asked for.
 if (process.env.NODE_ENV !== 'test') {
   const PORT = Number(process.env.PORT ?? 5000);
   app.listen(PORT, () => { console.log(`Server running on port ${PORT}`); });
+  startJobs();
 }

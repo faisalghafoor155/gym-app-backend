@@ -165,6 +165,50 @@ export const inviteMail = (
   };
 };
 
+/**
+ * Sent to a member on the day their membership runs out.
+ *
+ * No link and no button, unlike the other two: there is nothing for the member
+ * to click. Renewing happens at the counter, so the useful thing this mail can
+ * do is tell them plainly what has run out and where to sort it — which is why
+ * the gym's own name carries the message rather than a call to action.
+ *
+ * `planName` is included because a member who has bought more than one thing
+ * needs to know which of them expired.
+ */
+export const membershipExpiryMail = (
+  memberName: string,
+  gymName: string,
+  planName: string,
+): Omit<Mail, 'to'> => {
+  // Only the first name: the full record often carries a formal name the
+  // member is never addressed by out loud.
+  const firstName = memberName.split(' ')[0] ?? memberName;
+
+  return {
+    subject: `Your ${gymName} membership expires today`,
+    text:
+      `Hi ${firstName},\n\n` +
+      `Your ${planName} membership at ${gymName} expires today.\n\n` +
+      `To keep training without a break, renew at the front desk on your next ` +
+      `visit.\n\n` +
+      `If you have already renewed, please ignore this — it may have crossed ` +
+      `with your payment.`,
+    html:
+      `<div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:480px">` +
+      `<h2 style="margin:0 0 16px;font-size:18px">Your membership expires today</h2>` +
+      `<p style="color:#374151;line-height:1.5">Hi ${firstName},</p>` +
+      `<p style="color:#374151;line-height:1.5">Your <strong>${planName}</strong> ` +
+      `membership at <strong>${gymName}</strong> expires today.</p>` +
+      `<p style="color:#374151;line-height:1.5">To keep training without a break, ` +
+      `renew at the front desk on your next visit.</p>` +
+      `<p style="color:#6b7280;font-size:13px;line-height:1.5;margin-top:24px">` +
+      `If you have already renewed, please ignore this — it may have crossed with ` +
+      `your payment.</p>` +
+      `</div>`,
+  };
+};
+
 /** The reset mail itself. Plain text alongside the HTML so it stays readable
  *  in clients that refuse to render markup.
  *

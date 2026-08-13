@@ -370,6 +370,46 @@ model AuditLog {
   @@index([gymId, actorId, createdAt])
 }
 
+/// What kind of reminder a ReminderLog row records. An enum rather than free
+/// text so adding a second reminder later cannot collide with this one by
+/// typo — the unique constraint is only as good as the values going into it.
+enum ReminderKind {
+  /// Sent to the member on the day their membership runs out.
+  membershipExpiry
+}
+
+/// One reminder that has been sent, so it is never sent twice.
+///
+/// The job runs daily, but "daily" is not a guarantee of once: a restart, a
+/// redeploy, or a second backend instance all re-run it, and a member receiving
+/// the same "your membership expires today" three times would learn to ignore
+/// all of them. The unique constraint is what makes the send idempotent — the
+/// row is written in the same breath as the mail, and a duplicate insert is how
+/// a second attempt discovers it has nothing to do.
+///
+/// Kept after the membership is renewed or deleted rather than cascading away:
+/// the question this table answers is "was this already sent", which stays
+/// worth answering after the thing it was about is gone.
+model ReminderLog {
+  id           String       @id @default(uuid())
+  gymId        String
+  membershipId String
+  kind         ReminderKind
+
+  /// The day the reminder was for, not the moment it went out. A job that runs
+  /// twice on the same day must collide; one that runs the next day must not.
+  sentOn DateTime @db.Date
+
+  /// Where it went, copied in rather than joined: an audit of what was actually
+  /// sent has to stay readable after the member's address changes.
+  sentTo String
+
+  createdAt DateTime @default(now())
+
+  @@unique([membershipId, kind, sentOn])
+  @@index([gymId, sentOn])
+}
+
 model Supplement {
   id          String   @id @default(uuid())
   gymId       String
