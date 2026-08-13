@@ -35,7 +35,9 @@ const app = express();
 // this, every request looks like it comes from the proxy's IP and one attacker
 // could rate-limit every gym out of the app. `true` is avoided deliberately:
 // it would let a client spoof its IP via X-Forwarded-For.
-app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS ?? 0));
+// In tests, one hop so a forged X-Forwarded-For reaches the limiter — the
+// rate-limit cases need distinct client IPs to get independent budgets.
+app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS ?? (process.env.NODE_ENV === 'test' ? 1 : 0)));
 
 app.use(helmet());
 
@@ -70,6 +72,12 @@ const authLimiter = rateLimit({
   standardHeaders: 'draft-7',
   legacyHeaders: false,
   message: { error: 'Too many attempts. Please try again in 15 minutes.' },
+  // Every integration test shares one IP, so a suite of failed-login cases
+  // would trip the limiter and start testing it instead of the endpoint. The
+  // opt-out is per-request rather than a disabled limiter, so the middleware
+  // under test is still the real one — see auth.integration.test.ts, which
+  // clears this header to assert the throttling actually works.
+  skip: req => process.env.NODE_ENV === 'test' && req.headers['x-test-skip-ratelimit'] === '1',
 });
 
 app.use('/api/auth/login', authLimiter);
@@ -113,5 +121,15 @@ const errorHandler: ErrorRequestHandler = (err, _req, res, next) => {
 };
 app.use(errorHandler);
 
-const PORT = Number(process.env.PORT ?? 5000);
-app.listen(PORT, () => { console.log(`Server running on port ${PORT}`); });
+/**
+ * Exported so tests can mount the real app — every route, middleware and the
+ * error handler above — against supertest without opening a port.
+ */
+export default app;
+
+// Started only when run as the server. Importing this module (as the tests do)
+// must not bind a port, or a second import would fight the first for it.
+if (process.env.NODE_ENV !== 'test') {
+  const PORT = Number(process.env.PORT ?? 5000);
+  app.listen(PORT, () => { console.log(`Server running on port ${PORT}`); });
+}
