@@ -395,6 +395,42 @@ export const paymentSummaryQuerySchema = z.object({
   months: z.coerce.number().int().min(1).max(24).default(6),
 });
 
+/**
+ * One month's collection, member by member.
+ *
+ * The month is named rather than described as a range, because that is the
+ * question being asked — "who paid in August" — and a free range would let the
+ * page claim a month while showing something else. Parsed into parts here so
+ * the controller builds the window in local time; `new Date('2026-08')` would
+ * read as UTC and pull a neighbouring month in for any timezone but this one.
+ */
+export const monthlyCollectionQuerySchema = z.object({
+  month: z.string()
+    .regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'must be a month in YYYY-MM form')
+    .transform(v => {
+      const [year, month] = v.split('-').map(Number) as [number, number];
+      return { value: v, year, month };
+    }),
+  search: z.string().trim().max(100, 'is too long')
+    .transform(v => v || undefined).optional(),
+  /**
+   * Which side of the month is being asked about.
+   *
+   * `paid` and `unpaid` are not two filters over one list — they are answers to
+   * two different questions. "Who paid" is driven by payment rows; "who has not"
+   * cannot be, because a member who paid nothing at all has no row to filter.
+   * That side is driven by memberships instead, so somebody who never came near
+   * the counter still appears.
+   */
+  view: z.enum(['paid', 'unpaid', 'all']).default('paid'),
+  /** Whether unpaid dues for the month are listed alongside what was collected.
+   *  Applies to the `paid` view only; the `unpaid` view is dues by definition. */
+  includeDue: z.enum(['true', 'false']).default('true')
+    .transform(v => v === 'true'),
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+});
+
 // --- inferred request-body types ---------------------------------------
 
 export type RegisterBody = z.infer<typeof registerSchema>;
@@ -424,6 +460,7 @@ export type CreatePaymentBody = z.infer<typeof createPaymentSchema>;
 export type UpdatePaymentBody = z.infer<typeof updatePaymentSchema>;
 export type PaymentQuery = z.infer<typeof paymentQuerySchema>;
 export type PaymentSummaryQuery = z.infer<typeof paymentSummaryQuerySchema>;
+export type MonthlyCollectionQuery = z.infer<typeof monthlyCollectionQuerySchema>;
 export type CreatePlanBody = z.infer<typeof createPlanSchema>;
 export type AssignPlanBody = z.infer<typeof assignPlanSchema>;
 export type CreateSupplementBody = z.infer<typeof createSupplementSchema>;

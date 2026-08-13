@@ -11,6 +11,7 @@ import {
   updatePaymentSchema,
   paymentQuerySchema,
   paymentSummaryQuerySchema,
+  monthlyCollectionQuerySchema,
 } from "../schemas.js";
 import {
   getAll,
@@ -19,6 +20,7 @@ import {
   remove,
   getDue,
   getSummary,
+  getMonthlyCollection,
 } from "../controllers/paymentsController.js";
 
 const router = Router();
@@ -48,6 +50,15 @@ router.get(
   requireOwner,
   validate(paymentSummaryQuerySchema, "query"),
   authed(getSummary),
+);
+// Who paid in a given month, as opposed to how much the month brought in.
+// Owner-only for the same reason as the summary: it is the gym's collection,
+// not one staff member's counter.
+router.get(
+  "/monthly",
+  requireOwner,
+  validate(monthlyCollectionQuerySchema, "query"),
+  authed(getMonthlyCollection),
 );
 router.put(
   "/:id",
