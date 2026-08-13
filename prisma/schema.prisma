@@ -221,9 +221,22 @@ model Attendance {
   gymId       String
   checkedInAt DateTime @default(now())
 
+  /// The day `checkedInAt` falls on. A `GENERATED ALWAYS` column: Postgres
+  /// derives it, and no insert may supply it — hence `dbgenerated()`, which is
+  /// what keeps it out of Prisma's create input.
+  ///
+  /// It exists only to be the thing a member can have one of per day. The
+  /// controller checks for an existing row first and returns it, so this is
+  /// never the error path in normal use — it is what makes the rule true when
+  /// two receptionists press the button in the same instant and both checks
+  /// pass before either insert lands. A guard that only ever holds when nothing
+  /// is happening at once is not a guard.
+  checkedInOn DateTime @default(dbgenerated()) @db.Date
+
   member Member @relation(fields: [memberId], references: [id])
   gym    Gym    @relation(fields: [gymId], references: [id])
 
+  @@unique([memberId, checkedInOn])
   @@index([gymId, checkedInAt])
   @@index([memberId])
 }
