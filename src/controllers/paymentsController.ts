@@ -34,44 +34,80 @@ const endOfDay = (d: Date): Date => {
 const visibleTo = (req: AuthedRequest) =>
   req.role === 'owner' ? {} : { recordedById: req.userId };
 
+/**
+ * The payments list, newest first, paged.
+ *
+ * `collected` and `outstanding` are totalled over everything matching the
+ * filters, not over the rows in this page. The page header reads "matching
+ * filters", and a total that quietly covered only the first 25 rows while
+ * saying that would be wrong in the one direction money must never be wrong.
+ * They are grouped in the database for the same reason: summing a page in the
+ * client can only ever total the page.
+ */
 export const getAll = async (
   req: AuthedRequest<Record<string, string>, unknown, unknown, PaymentQuery>,
   res: Response,
 ): Promise<void> => {
-  const { status, type, search, from, to } = req.query;
+  const { status, type, search, from, to, page, limit } = req.query;
   try {
-    const payments = await prisma.payment.findMany({
-      where: {
-        gymId: req.gymId,
-        ...visibleTo(req),
-        ...(status && { status }),
-        ...(type && { type }),
-        ...((from || to) && {
-          paymentDate: {
-            ...(from && { gte: from }),
-            ...(to && { lte: endOfDay(to) }),
-          },
-        }),
-        // Staff search by whatever they have to hand — a name or a phone.
-        ...(search && {
-          member: {
-            OR: [
-              { name: { contains: search, mode: 'insensitive' as const } },
-              { phone: { contains: search, mode: 'insensitive' as const } },
-              { memberNo: { contains: search, mode: 'insensitive' as const } },
-            ],
-          },
-        }),
-      },
-      include: {
-        member: { select: { name: true, phone: true, memberNo: true } },
-        // Shown to the owner as "who took this". Staff see only their own rows,
-        // so it tells them nothing they did not already know.
-        recordedBy: { select: { id: true, name: true } },
-      },
-      orderBy: { paymentDate: 'desc' },
+    const where = {
+      gymId: req.gymId,
+      ...visibleTo(req),
+      ...(status && { status }),
+      ...(type && { type }),
+      ...((from || to) && {
+        paymentDate: {
+          ...(from && { gte: from }),
+          ...(to && { lte: endOfDay(to) }),
+        },
+      }),
+      // Staff search by whatever they have to hand — a name or a phone.
+      ...(search && {
+        member: {
+          OR: [
+            { name: { contains: search, mode: 'insensitive' as const } },
+            { phone: { contains: search, mode: 'insensitive' as const } },
+            { memberNo: { contains: search, mode: 'insensitive' as const } },
+          ],
+        },
+      }),
+    };
+
+    const [payments, total, totals] = await Promise.all([
+      prisma.payment.findMany({
+        where,
+        include: {
+          member: { select: { name: true, phone: true, memberNo: true } },
+          // Shown to the owner as "who took this". Staff see only their own
+          // rows, so it tells them nothing they did not already know.
+          recordedBy: { select: { id: true, name: true } },
+        },
+        orderBy: { paymentDate: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      prisma.payment.count({ where }),
+      prisma.payment.groupBy({
+        by: ['status'],
+        where,
+        _sum: { amount: true },
+      }),
+    ]);
+
+    // groupBy omits a status entirely when nothing matches it. `sum` treats a
+    // missing value as zero, so an absent group needs no special case.
+    const totalFor = (s: string): number =>
+      sum(totals.filter(t => t.status === s).map(t => t._sum.amount));
+
+    res.json({
+      data: payments.map(p => withMoney(p, 'amount')),
+      total,
+      page,
+      limit,
+      hasMore: page * limit < total,
+      collected: totalFor('paid'),
+      outstanding: totalFor('due'),
     });
-    res.json(payments.map(p => withMoney(p, 'amount')));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });

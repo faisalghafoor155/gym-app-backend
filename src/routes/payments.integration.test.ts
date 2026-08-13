@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import prisma from '../db.js';
 import { addDays } from '../services/membership.js';
-import { addMember, addPlan, api, makeGym, resetDb } from '../test/helpers.js';
+import { addMember, addPlan, addUser, api, makeGym, resetDb } from '../test/helpers.js';
 
 /**
  * Money through the real stack: Decimal in the database, plain numbers over
@@ -65,10 +65,14 @@ describe('money crosses the API boundary as numbers', () => {
       .send({ memberId: member.id, amount: 1234.56, type: 'other' });
 
     const res = await api().get('/api/payments').set('Cookie', owner.cookie);
-    const rows = (res.body.payments ?? res.body) as { amount: number }[];
+    const rows = res.body.data as { amount: number }[];
 
     expect(rows[0].amount).toBe(1234.56);
     expect(typeof rows[0].amount).toBe('number');
+    // The header totals cross as numbers too, for the same reason the rows do:
+    // a Decimal would serialise as "1234.56" and every toLocaleString break.
+    expect(res.body.collected).toBe(1234.56);
+    expect(typeof res.body.collected).toBe('number');
   });
 
   it('stores money as Decimal, so the database keeps the exact value', async () => {
@@ -237,5 +241,119 @@ describe('payment validation', () => {
       .send({ memberId: member.id, amount: 500, type: 'donation' });
 
     expect(res.status).toBe(400);
+  });
+});
+
+/**
+ * Paging the payments list, and the totals that sit above it.
+ *
+ * The totals are the part worth guarding. The page header says "matching
+ * filters", so they have to cover every matching row rather than the page —
+ * a figure that quietly totalled the first 25 payments while claiming to be
+ * the filtered total would be wrong in the one direction money must never be.
+ */
+describe('payments list — paging and totals', () => {
+  it('pages the rows', async () => {
+    const owner = await makeGym();
+    const member = await addMember(owner.gymId);
+    for (let i = 0; i < 5; i++) {
+      await api().post('/api/payments').set('Cookie', owner.cookie)
+        .send({ memberId: member.id, amount: 100, type: 'other' });
+    }
+
+    const res = await api().get('/api/payments?limit=2').set('Cookie', owner.cookie);
+
+    expect(res.body.data).toHaveLength(2);
+    expect(res.body.total).toBe(5);
+    expect(res.body.hasMore).toBe(true);
+  });
+
+  it('totals every matching payment, not the page', async () => {
+    const owner = await makeGym();
+    const member = await addMember(owner.gymId);
+    // Ten payments of 100, asked for two at a time.
+    for (let i = 0; i < 10; i++) {
+      await api().post('/api/payments').set('Cookie', owner.cookie)
+        .send({ memberId: member.id, amount: 100, type: 'other' });
+    }
+
+    const res = await api().get('/api/payments?limit=2').set('Cookie', owner.cookie);
+
+    expect(res.body.data).toHaveLength(2);
+    expect(res.body.collected).toBe(1000);
+  });
+
+  it('splits paid from outstanding', async () => {
+    const owner = await makeGym();
+    const member = await addMember(owner.gymId);
+    await api().post('/api/payments').set('Cookie', owner.cookie)
+      .send({ memberId: member.id, amount: 2500, type: 'membership', status: 'paid' });
+    await api().post('/api/payments').set('Cookie', owner.cookie)
+      .send({ memberId: member.id, amount: 800, type: 'membership', status: 'due' });
+
+    const res = await api().get('/api/payments').set('Cookie', owner.cookie);
+
+    expect(res.body.collected).toBe(2500);
+    expect(res.body.outstanding).toBe(800);
+  });
+
+  it('keeps the totals exact over payments a float would drift on', async () => {
+    const owner = await makeGym();
+    const member = await addMember(owner.gymId);
+    for (let i = 0; i < 10; i++) {
+      await api().post('/api/payments').set('Cookie', owner.cookie)
+        .send({ memberId: member.id, amount: 0.1, type: 'other' });
+    }
+
+    const res = await api().get('/api/payments?limit=3').set('Cookie', owner.cookie);
+
+    // Ten 0.10s summed as floats give 0.9999999999999999. Summed as Decimals
+    // in the database, and only then made a number, they give 1.
+    expect(res.body.collected).toBe(1);
+  });
+
+  it('narrows the totals with the filters they claim to follow', async () => {
+    const owner = await makeGym();
+    const member = await addMember(owner.gymId);
+    await api().post('/api/payments').set('Cookie', owner.cookie)
+      .send({ memberId: member.id, amount: 2500, type: 'membership' });
+    await api().post('/api/payments').set('Cookie', owner.cookie)
+      .send({ memberId: member.id, amount: 300, type: 'supplement' });
+
+    const res = await api().get('/api/payments?type=supplement').set('Cookie', owner.cookie);
+
+    expect(res.body.total).toBe(1);
+    expect(res.body.collected).toBe(300);
+  });
+
+  it('reports zero rather than nothing when a status has no rows', async () => {
+    const owner = await makeGym();
+    // groupBy omits an absent status entirely, so this is where an undefined
+    // would leak out and render as "Rs. undefined".
+    const res = await api().get('/api/payments').set('Cookie', owner.cookie);
+
+    expect(res.body.collected).toBe(0);
+    expect(res.body.outstanding).toBe(0);
+  });
+
+  it('totals only what a staff member took, as their rows are narrowed', async () => {
+    const owner = await makeGym();
+    const staff = await addUser(owner.gymId, { role: 'staff' });
+    const member = await addMember(owner.gymId);
+
+    await api().post('/api/payments').set('Cookie', owner.cookie)
+      .send({ memberId: member.id, amount: 5000, type: 'membership' });
+    await api().post('/api/payments').set('Cookie', staff.cookie)
+      .send({ memberId: member.id, amount: 700, type: 'membership' });
+
+    const asStaff = await api().get('/api/payments').set('Cookie', staff.cookie);
+    const asOwner = await api().get('/api/payments').set('Cookie', owner.cookie);
+
+    // The whole point of the staff narrowing is that they see their own till
+    // and not the gym's income — a total that ignored it would hand them the
+    // figure the rows were withheld to protect.
+    expect(asStaff.body.total).toBe(1);
+    expect(asStaff.body.collected).toBe(700);
+    expect(asOwner.body.collected).toBe(5700);
   });
 });

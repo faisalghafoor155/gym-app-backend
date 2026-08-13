@@ -147,6 +147,94 @@ export const withPlan = {
 } as const;
 
 /**
+ * Midnight today, which is the boundary every derived status is measured
+ * against. Taken once per request so two rows in the same response can never
+ * disagree about where "today" starts.
+ */
+const startOfDay = (now: Date): Date => {
+  const d = new Date(now);
+  d.setHours(0, 0, 0, 0);
+  return d;
+};
+
+/**
+ * A `where` fragment selecting members whose *derived* status matches a filter
+ * tab.
+ *
+ * None of these statuses are stored — `expiring` and `lapsed` are functions of
+ * today's date, and a member's effective status depends on the membership
+ * hanging off them. Filtering therefore has to be expressed as date arithmetic
+ * against the membership table rather than as a column match, which is the
+ * whole reason this is not a one-liner.
+ *
+ * It must agree with `displayStatus`, `isLapsed` and `effectiveMemberStatus`
+ * above, and with `memberBucket` on the client. The boundaries are inclusive in
+ * the same places they are there: `expiring` runs to the end of day
+ * `EXPIRING_SOON_DAYS` out, and lapsing needs *more* than `LAPSED_AFTER_DAYS`
+ * to have passed.
+ */
+export const memberStatusWhere = (
+  filter: 'active' | 'expiring' | 'expired' | 'lapsed' | 'none',
+  now: Date = new Date(),
+): Prisma.MemberWhereInput => {
+  const today = startOfDay(now);
+  // The newest membership that has not been replaced or called off is the one
+  // that decides; `some` over that set is how a member-level filter reaches it.
+  const current = (where: Prisma.MembershipWhereInput): Prisma.MemberWhereInput =>
+    ({ memberships: { some: { ...currentMembershipWhere, ...where } } });
+
+  // Day EXPIRING_SOON_DAYS from now is still "expiring", so the window ends at
+  // the last instant of that day rather than at midnight starting it.
+  const soonEnd = addDays(today, EXPIRING_SOON_DAYS + 1);
+  // Expired strictly more than LAPSED_AFTER_DAYS ago. An expiry exactly on the
+  // boundary has not lapsed yet, matching `< -LAPSED_AFTER_DAYS`.
+  const lapsedBefore = addDays(today, -LAPSED_AFTER_DAYS);
+
+  switch (filter) {
+    // Deactivated by hand outranks the calendar, so an `inactive` member is
+    // never listed as active however healthy their dates look.
+    case 'active':
+      return {
+        status: 'active',
+        ...current({ status: 'active', expiryDate: { gte: soonEnd } }),
+      };
+    case 'expiring':
+      return {
+        status: 'active',
+        ...current({ status: 'active', expiryDate: { gte: today, lt: soonEnd } }),
+      };
+    // Expired but not yet lapsed — still somebody the gym expects back.
+    case 'expired':
+      return {
+        status: 'active',
+        ...current({
+          status: 'active',
+          expiryDate: { lt: today, gte: lapsedBefore },
+        }),
+      };
+    // Two ways to be off the roster: deactivated by hand, or gone long enough
+    // that the 60-day rule retired them. The client shows both on one tab.
+    case 'lapsed':
+      return {
+        OR: [
+          { status: { not: 'active' } },
+          {
+            status: 'active',
+            ...current({ status: 'active', expiryDate: { lt: lapsedBefore } }),
+          },
+        ],
+      };
+    // Never sold anything, or holding only a membership that is suspended or
+    // otherwise not `active` — neither reads as a live membership on the page.
+    case 'none':
+      return {
+        status: 'active',
+        NOT: { memberships: { some: { ...currentMembershipWhere, status: 'active' } } },
+      };
+  }
+};
+
+/**
  * The default price list a brand-new gym starts with, so the first person to
  * open the plans page is editing prices rather than staring at an empty table.
  * Priced at zero deliberately — a wrong price looks like a real one.

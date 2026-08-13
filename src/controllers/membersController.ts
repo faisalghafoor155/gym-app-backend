@@ -4,10 +4,12 @@ import prisma from '../db.js';
 import { audit, diff } from '../services/audit.js';
 import {
   addDays, currentMembershipWhere, effectiveMemberStatus, formatMemberNo,
-  toView, withPlan,
+  memberStatusWhere, toView, withPlan,
 } from '../services/membership.js';
 import type { AuthedRequest } from '../types.js';
-import type { CreateMemberBody, UpdateMemberBody, IdParam } from '../schemas.js';
+import type {
+  CreateMemberBody, UpdateMemberBody, IdParam, MemberQuery, MemberStatusFilter,
+} from '../schemas.js';
 
 const memberFields = {
   id: true, gymId: true, memberNo: true, name: true, email: true, phone: true,
@@ -52,17 +54,125 @@ const decorate = ({ memberships, ...member }: MemberRow, now: Date = new Date())
 
 const selectMember = { ...memberFields, memberships: currentMembership } as const;
 
-export const getAll = async (req: AuthedRequest, res: Response): Promise<void> => {
+/**
+ * The same row without the photo, for the `all=true` pickers.
+ *
+ * Photos are base64 data-URLs of up to 2MB living inline on the row, so they
+ * are the entire reason a full member list is expensive. A dropdown renders a
+ * name, never a face, so leaving them out is what makes returning every member
+ * affordable at all.
+ */
+const selectMemberLite = (() => {
+  const { photo: _photo, ...rest } = memberFields;
+  return { ...rest, memberships: currentMembership } as const;
+})();
+
+/**
+ * The roster, newest first.
+ *
+ * Paged by default. Search and the status tabs are applied here rather than in
+ * the browser: a client that filters what it was given can only ever search the
+ * page it is holding, which turns a search box into a lie the moment the gym
+ * outgrows one page.
+ *
+ * `all=true` opts out for the pickers that need every member — see the query
+ * schema. That response drops photos and is still a single query, so the cost
+ * is a name-sized row per member rather than a photo-sized one.
+ */
+export const getAll = async (
+  req: AuthedRequest<Record<string, string>, unknown, unknown, MemberQuery>,
+  res: Response,
+): Promise<void> => {
+  const { search, status, page, limit, all } = req.query;
   try {
-    const members = await prisma.member.findMany({
-      where: { gymId: req.gymId },
-      select: selectMember,
-      orderBy: { createdAt: 'desc' },
-    });
-    // One clock for the whole list, so two rows in the same response can never
-    // disagree about what "today" was.
+    // One clock for the whole request, so the rows, the filter boundaries and
+    // the count can never disagree about what "today" was.
     const now = new Date();
-    res.json(members.map(m => decorate(m, now)));
+
+    const where = {
+      gymId: req.gymId,
+      // Whatever the front desk has to hand: a name, a number, or a phone.
+      ...(search && {
+        OR: [
+          { name: { contains: search, mode: 'insensitive' as const } },
+          { memberNo: { contains: search, mode: 'insensitive' as const } },
+          { phone: { contains: search, mode: 'insensitive' as const } },
+        ],
+      }),
+      // No tab chosen means "everyone still on the books", which excludes the
+      // lapsed: somebody who stopped coming two months ago is reachable from
+      // their own tab rather than cluttering the default list.
+      //
+      // Two things override that. A search, because someone typing a name wants
+      // that person found and a box that silently refuses to return them reads
+      // as broken search rather than as a filter. And `all`, because a picker
+      // asking for every member means every member — a lapsed one is exactly
+      // who the front desk is about to sell a renewal to.
+      ...(status
+        ? memberStatusWhere(status, now)
+        : (search || all) ? {} : { NOT: memberStatusWhere('lapsed', now) }),
+    };
+
+    if (all) {
+      const members = await prisma.member.findMany({
+        where,
+        select: selectMemberLite,
+        orderBy: { createdAt: 'desc' },
+      });
+      // Same envelope as the paged response, so a caller never has to branch on
+      // the shape of what came back — only `hasMore` differs, and it cannot be
+      // true here by definition.
+      res.json({
+        data: members.map(m => decorate({ ...m, photo: null }, now)),
+        total: members.length,
+        page: 1,
+        limit: members.length,
+        hasMore: false,
+      });
+      return;
+    }
+
+    // The tab counts, which have to cover the whole roster rather than the page
+    // — a tab labelled with what happens to be on screen is worse than one with
+    // no number at all. Each is the same predicate the tab itself filters by, so
+    // clicking a tab showing 12 always lands on 12 people.
+    //
+    // Counted against `searchWhere` rather than `where`: the tabs must keep
+    // narrowing the current search, but must not narrow themselves by the tab
+    // already selected, which would leave every other tab reading zero.
+    const searchWhere = { gymId: req.gymId, ...(where.OR && { OR: where.OR }) };
+    const countFor = (f: MemberStatusFilter) =>
+      prisma.member.count({ where: { ...searchWhere, ...memberStatusWhere(f, now) } });
+
+    const [members, total, active, expiring, expired, lapsed, none] = await Promise.all([
+      prisma.member.findMany({
+        where,
+        select: selectMember,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      prisma.member.count({ where }),
+      countFor('active'),
+      countFor('expiring'),
+      countFor('expired'),
+      countFor('lapsed'),
+      countFor('none'),
+    ]);
+
+    res.json({
+      data: members.map(m => decorate(m, now)),
+      total,
+      page,
+      limit,
+      hasMore: page * limit < total,
+      // "All" means everyone still on the books, which is everybody except the
+      // lapsed — the same rule the page's All tab applies.
+      counts: {
+        all: active + expiring + expired + none,
+        active, expiring, expired, lapsed, none,
+      },
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });

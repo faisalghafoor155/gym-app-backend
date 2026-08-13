@@ -35,7 +35,11 @@ describe('members', () => {
     const res = await api().get('/api/members').set('Cookie', a.cookie);
 
     expect(res.status).toBe(200);
-    expect(res.body.map((m: { name: string }) => m.name)).toEqual(['Alice']);
+    expect(res.body.data.map((m: { name: string }) => m.name)).toEqual(['Alice']);
+    // The counts are scoped too, or they would leak how many members the other
+    // gym has even while its rows stay hidden.
+    expect(res.body.total).toBe(1);
+    expect(res.body.counts.all).toBe(1);
   });
 
   it('will not fetch another gym\'s member by id', async () => {
@@ -128,10 +132,13 @@ describe('memberships and payments', () => {
       .send({ memberId: b.member.id, amount: 9999, type: 'membership' });
 
     const res = await api().get('/api/payments').set('Cookie', a.cookie);
-    const rows = (res.body.payments ?? res.body) as { amount: number }[];
+    const rows = res.body.data as { amount: number }[];
 
     expect(rows).toHaveLength(1);
     expect(rows[0].amount).toBe(2500);
+    // The filtered totals are scoped as well: gym B's 9999 must not reach gym
+    // A's header, which would leak its takings without ever showing its rows.
+    expect(res.body.collected).toBe(2500);
   });
 });
 

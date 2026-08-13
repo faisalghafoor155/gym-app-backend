@@ -129,6 +129,11 @@ export const transferOwnershipSchema = z.object({ userId: uuid });
 
 // --- members -----------------------------------------------------------
 
+// Nothing in a list query may be required: the page loads with no filters at
+// all. Blank values are dropped rather than rejected, so an empty search box or
+// a cleared date input is a no-op instead of a 400.
+const blankToUndefined = z.literal('').transform(() => undefined);
+
 // A birth date in the future is a typo, and nobody is 120.
 const birthDate = z.coerce.date({ error: 'must be a valid date' })
   .refine(d => d <= new Date(), 'cannot be in the future')
@@ -162,6 +167,40 @@ export const createMemberSchema = z.object({
       message: 'is required when a start date is given',
     });
   }
+});
+
+/**
+ * The status tabs the members page offers. Every one of these is derived from
+ * dates at read time rather than stored, so the controller turns them into date
+ * arithmetic instead of a column match — see `memberStatusWhere`.
+ *
+ * `superseded` is deliberately absent: it is bookkeeping between two
+ * memberships, not something a member is ever shown as.
+ */
+export const MEMBER_STATUS_FILTERS = [
+  'active', 'expiring', 'expired', 'lapsed', 'none',
+] as const;
+
+export const memberQuerySchema = z.object({
+  search: z.string().trim().max(100, 'is too long')
+    .transform(v => v || undefined).optional(),
+  status: z.enum(MEMBER_STATUS_FILTERS, { error: 'is not a valid status filter' })
+    .or(blankToUndefined).optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  // Capped at 100 like the audit log: the ceiling is what stops a caller
+  // asking for the whole table back through the page parameter.
+  limit: z.coerce.number().int().min(1).max(100).default(25),
+  /**
+   * Opt out of paging and return every member, for the pickers that need a
+   * complete list — the payment form's member dropdown cannot offer only the
+   * first 25 people in the gym.
+   *
+   * Deliberately explicit rather than the default: a caller asking for
+   * everything should have to say so, so the expensive shape is the one you
+   * choose rather than the one you get by forgetting. Photos are dropped from
+   * this response, which is what keeps it affordable — see the controller.
+   */
+  all: z.enum(['true', 'false']).optional().transform(v => v === 'true'),
 });
 
 export const updateMemberSchema = z.object({
@@ -255,11 +294,6 @@ export const createPaymentSchema = z.object({
   paymentDate: date.optional(),
 });
 
-// Nothing here may be required: the page loads with no filters at all. Blank
-// values are dropped rather than rejected, so an empty search box or a cleared
-// date input is a no-op instead of a 400.
-const blankToUndefined = z.literal('').transform(() => undefined);
-
 export const updatePaymentSchema = z.object({
   // The member a payment belongs to is deliberately not editable — moving money
   // between members is a delete and a fresh entry, so both show in the trail.
@@ -281,6 +315,8 @@ export const paymentQuerySchema = z.object({
     .transform(v => v || undefined).optional(),
   from: date.or(blankToUndefined).optional(),
   to: date.or(blankToUndefined).optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(25),
 }).superRefine((data, ctx) => {
   if (data.from && data.to && data.to < data.from) {
     ctx.addIssue({ code: 'custom', path: ['to'], message: 'must be after the from date' });
@@ -374,6 +410,8 @@ export type UpdateUserBody = z.infer<typeof updateUserSchema>;
 export type TransferOwnershipBody = z.infer<typeof transferOwnershipSchema>;
 export type CreateMemberBody = z.infer<typeof createMemberSchema>;
 export type UpdateMemberBody = z.infer<typeof updateMemberSchema>;
+export type MemberQuery = z.infer<typeof memberQuerySchema>;
+export type MemberStatusFilter = (typeof MEMBER_STATUS_FILTERS)[number];
 export type CreateMembershipPlanBody = z.infer<typeof createMembershipPlanSchema>;
 export type UpdateMembershipPlanBody = z.infer<typeof updateMembershipPlanSchema>;
 export type MembershipPlanQuery = z.infer<typeof membershipPlanQuerySchema>;

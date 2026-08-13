@@ -5,7 +5,7 @@ import { requireStaff, requireOwner } from '../middleware/requireRole.js';
 import { authed } from '../types.js';
 import {
   idParam, membershipParams, createMemberSchema, updateMemberSchema,
-  createMembershipSchema, extendMembershipSchema,
+  memberQuerySchema, createMembershipSchema, extendMembershipSchema,
 } from '../schemas.js';
 import { getAll, getOne, create, update, remove } from '../controllers/membersController.js';
 import {
@@ -19,7 +19,7 @@ const router = Router();
 router.use(auth);
 router.use(requireStaff);
 
-router.get('/', authed(getAll));
+router.get('/', validate(memberQuerySchema, 'query'), authed(getAll));
 router.post('/', validate(createMemberSchema), authed(create));
 router.get('/:id', validate(idParam, 'params'), authed(getOne));
 router.put('/:id', validate(idParam, 'params'), validate(updateMemberSchema), authed(update));

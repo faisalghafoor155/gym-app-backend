@@ -146,6 +146,48 @@ export const addMember = async (
   return member;
 };
 
+/**
+ * A membership expiring a given number of days from now — negative for one that
+ * already lapsed.
+ *
+ * The expiry is set directly rather than derived from a plan duration, because
+ * what the status filters key off is the expiry date itself. Offsets are taken
+ * from midnight to match `daysUntil`, so `days: 0` means "expires today"
+ * whatever time the suite happens to run at.
+ */
+export const addMembership = async (
+  gymId: string,
+  memberId: string,
+  opts: {
+    planId?: string;
+    expiresInDays?: number;
+    status?: 'active' | 'expired' | 'suspended' | 'cancelled' | 'superseded';
+  } = {},
+): Promise<{ id: string }> => {
+  const { expiresInDays = 30, status = 'active' } = opts;
+  const planId = opts.planId ?? (await addPlan(gymId)).id;
+
+  const expiry = new Date();
+  expiry.setHours(0, 0, 0, 0);
+  expiry.setDate(expiry.getDate() + expiresInDays);
+  const start = new Date(expiry);
+  start.setDate(start.getDate() - 30);
+
+  return prisma.membership.create({
+    data: {
+      gymId,
+      memberId,
+      planId,
+      startDate: start,
+      expiryDate: expiry,
+      originalExpiryDate: expiry,
+      pricePaid: 2500,
+      status,
+    },
+    select: { id: true },
+  });
+};
+
 /** A membership plan to sell. */
 export const addPlan = async (
   gymId: string,
