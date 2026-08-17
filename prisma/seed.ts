@@ -108,17 +108,33 @@ const DIET_PLANS = [
 async function main(): Promise<void> {
   const gymName = arg('--gym');
 
-  const gym = gymName
+  let gym = gymName
     ? await prisma.gym.findFirst({ where: { name: gymName } })
     : await prisma.gym.findFirst({ orderBy: { createdAt: 'asc' } });
 
   if (!gym) {
-    console.error(
-      gymName
-        ? `No gym named "${gymName}". Register one through the app first.`
-        : 'No gym in the database. Register one through the app first.',
-    );
-    process.exit(1);
+    console.log("No gym found in database. Creating default 'Powerhouse Gym' and owner...");
+    gym = await prisma.gym.create({
+      data: {
+        name: "Powerhouse Gym",
+        ownerName: "Admin Owner",
+      }
+    });
+
+    const bcrypt = await import('bcryptjs');
+    const passwordHash = await bcrypt.default.hash('password123', 10);
+
+    await prisma.user.create({
+      data: {
+        gymId: gym.id,
+        email: "owner@gym.com",
+        name: "Admin Owner",
+        passwordHash,
+        role: "owner",
+        isActive: true,
+      }
+    });
+    console.log("Created owner account: owner@gym.com / password123");
   }
 
   console.log(`Seeding into "${gym.name}" — nothing existing will be removed.`);
@@ -271,8 +287,11 @@ async function main(): Promise<void> {
         : cohort.kind === 'expired' ? between(2, 8)
         : between(10, 40);
 
+      const checkedDays = new Set<number>();
       for (let d = 0; d < activeDays; d++) {
         const ago = between(0, cohort.kind === 'expired' ? 70 : 55);
+        if (checkedDays.has(ago)) continue;
+        checkedDays.add(ago);
         const at = daysAgo(ago);
         // Gyms fill up morning and evening; the middle of the day is quiet.
         at.setHours(rand() > 0.45 ? between(17, 21) : between(6, 10), between(0, 59), 0, 0);
