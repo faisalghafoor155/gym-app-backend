@@ -234,9 +234,10 @@ model Membership {
 
   /// Written by the extension flow in a later phase; created here so the
   /// column exists before anything needs to fill it.
-  extendedDays    Int     @default(0)
+  extendedDays    Int       @default(0)
   extensionReason String?
   extendedBy      String?
+  freezeStartDate DateTime?
 
   createdAt DateTime @default(now())
 

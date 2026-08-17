@@ -209,3 +209,114 @@ export const extend = async (
     res.status(500).json({ error: 'Server error' });
   }
 };
+
+/**
+ * Suspends an active membership (freezes it).
+ */
+export const freeze = async (
+  req: AuthedRequest<MembershipParams>,
+  res: Response,
+): Promise<void> => {
+  const { id: memberId, membershipId } = req.params;
+  try {
+    const membership = await prisma.membership.findFirst({
+      where: { id: membershipId, memberId, gymId: req.gymId },
+      include: {
+        ...withPlan,
+        member: { select: { name: true, memberNo: true } },
+      },
+    });
+    if (!membership) {
+      res.status(404).json({ error: 'Membership not found' });
+      return;
+    }
+    if (membership.status !== 'active') {
+      res.status(400).json({ error: 'Only active memberships can be frozen' });
+      return;
+    }
+
+    const updated = await prisma.membership.update({
+      where: { id: membership.id },
+      data: {
+        status: 'suspended',
+        freezeStartDate: new Date(),
+      },
+      include: withPlan,
+    });
+
+    await audit(req, {
+      action: 'membership.freeze',
+      entity: 'membership',
+      entityId: membership.id,
+      entityLabel: `${membership.member.memberNo} · ${membership.member.name} · ${membership.plan.name}`,
+      before: { status: 'active' },
+      after: { status: 'suspended', freezeStartDate: updated.freezeStartDate },
+    });
+
+    res.json(toView(updated));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * Resumes a suspended membership (unfreezes it) and extends expiry Date.
+ */
+export const resume = async (
+  req: AuthedRequest<MembershipParams>,
+  res: Response,
+): Promise<void> => {
+  const { id: memberId, membershipId } = req.params;
+  try {
+    const membership = await prisma.membership.findFirst({
+      where: { id: membershipId, memberId, gymId: req.gymId },
+      include: {
+        ...withPlan,
+        member: { select: { name: true, memberNo: true } },
+      },
+    });
+    if (!membership) {
+      res.status(404).json({ error: 'Membership not found' });
+      return;
+    }
+    if (membership.status !== 'suspended' || !membership.freezeStartDate) {
+      res.status(400).json({ error: 'Only frozen memberships can be resumed' });
+      return;
+    }
+
+    // Calculate days frozen
+    const now = new Date();
+    const start = new Date(membership.freezeStartDate);
+    const msDiff = now.getTime() - start.getTime();
+    // Default to at least 1 day to make sure the time is calculated appropriately
+    const daysFrozen = Math.max(1, Math.ceil(msDiff / (1000 * 60 * 60 * 24)));
+
+    const newExpiry = addDays(membership.expiryDate, daysFrozen);
+
+    const updated = await prisma.membership.update({
+      where: { id: membership.id },
+      data: {
+        status: 'active',
+        expiryDate: newExpiry,
+        extendedDays: { increment: daysFrozen },
+        freezeStartDate: null,
+      },
+      include: withPlan,
+    });
+
+    await audit(req, {
+      action: 'membership.resume',
+      entity: 'membership',
+      entityId: membership.id,
+      entityLabel: `${membership.member.memberNo} · ${membership.member.name} · ${membership.plan.name}`,
+      before: { status: 'suspended', expiryDate: membership.expiryDate },
+      after: { status: 'active', expiryDate: newExpiry, daysFrozen },
+    });
+
+    res.json(toView(updated));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+};

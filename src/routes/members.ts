@@ -28,6 +28,8 @@ import {
   getHistory as getMembershipHistory,
   create as createMembership,
   extend as extendMembership,
+  freeze as freezeMembership,
+  resume as resumeMembership,
 } from "../controllers/membershipsController.js";
 
 const router = Router();
@@ -88,6 +90,20 @@ router.post(
   validate(membershipParams, "params"),
   validate(extendMembershipSchema),
   authed(extendMembership),
+);
+
+router.post(
+  "/:id/memberships/:membershipId/freeze",
+  requirePermission("canManageMemberships"),
+  validate(membershipParams, "params"),
+  authed(freezeMembership),
+);
+
+router.post(
+  "/:id/memberships/:membershipId/resume",
+  requirePermission("canManageMemberships"),
+  validate(membershipParams, "params"),
+  authed(resumeMembership),
 );
 
 export default router;

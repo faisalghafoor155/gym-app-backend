@@ -5,6 +5,7 @@ import request from 'supertest';
 
 import prisma from '../src/db.js';
 import app from '../src/index.js';
+import type { StaffPermission } from '@prisma/client';
 
 /**
  * Shared fixtures for the integration suite.
@@ -106,7 +107,7 @@ export const makeGym = async (opts: {
 /** An extra account inside an existing gym. */
 export const addUser = async (
   gymId: string,
-  opts: { role?: 'owner' | 'staff' | 'member'; memberId?: string; email?: string; staffPermission?: string } = {},
+  opts: { role?: 'owner' | 'staff' | 'member'; memberId?: string; email?: string; staffPermission?: StaffPermission } = {},
 ): Promise<TestAccount> => {
   const { role = 'staff', memberId, email = `${role}-${crypto.randomUUID()}@example.com`, staffPermission } = opts;
   const user = await prisma.user.create({
