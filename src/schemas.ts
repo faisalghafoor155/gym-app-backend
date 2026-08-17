@@ -564,6 +564,30 @@ export const updatePtSessionSchema = z.object({
   paymentStatus: z.enum(['unpaid', 'paid']).optional(),
 });
 
+export const createClassSchema = z.object({
+  name: name,
+  description: optionalText(500),
+});
+
+export const createClassScheduleSchema = z.object({
+  classId: uuid,
+  trainerId: uuid.or(z.literal("").transform(() => null)).nullish(),
+  dayOfWeek: z.coerce.number().int().min(0).max(6),
+  startTime: z.string().trim().regex(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/, "must be in HH:MM format"),
+  endTime: z.string().trim().regex(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/, "must be in HH:MM format"),
+  capacity: z.coerce.number().int().min(1).default(20),
+});
+
+export const createClassBookingSchema = z.object({
+  scheduleId: uuid,
+  memberId: uuid,
+  bookingDate: z.coerce.date(),
+});
+
+export const updateClassBookingSchema = z.object({
+  status: z.enum(['booked', 'attended', 'cancelled']),
+});
+
 // --- inferred request-body types ---------------------------------------
 
 export type RegisterBody = z.infer<typeof registerSchema>;
@@ -613,5 +637,10 @@ export type CreateTrainerBody = z.infer<typeof createTrainerSchema>;
 export type UpdateTrainerBody = z.infer<typeof updateTrainerSchema>;
 export type CreatePtSessionBody = z.infer<typeof createPtSessionSchema>;
 export type UpdatePtSessionBody = z.infer<typeof updatePtSessionSchema>;
+
+export type CreateClassBody = z.infer<typeof createClassSchema>;
+export type CreateClassScheduleBody = z.infer<typeof createClassScheduleSchema>;
+export type CreateClassBookingBody = z.infer<typeof createClassBookingSchema>;
+export type UpdateClassBookingBody = z.infer<typeof updateClassBookingSchema>;
 
 export type Gender = (typeof GENDERS)[number];

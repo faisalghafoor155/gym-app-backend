@@ -77,6 +77,9 @@ model Gym {
   auditLogs       AuditLog[]
   trainers        Trainer[]
   ptSessions      PtSession[]
+  classes         Class[]
+  classSchedules  ClassSchedule[]
+  classBookings   ClassBooking[]
 }
 
 /// Every account that can sign in. The first user created for a gym is its
@@ -182,6 +185,7 @@ model Member {
   trainerId       String?
   trainer         Trainer?         @relation(fields: [trainerId], references: [id])
   ptSessions      PtSession[]
+  classBookings   ClassBooking[]
 
   @@unique([gymId, memberNo])
   @@index([gymId])
@@ -529,6 +533,7 @@ model Trainer {
   gym                  Gym         @relation(fields: [gymId], references: [id])
   members              Member[]
   ptSessions           PtSession[]
+  classSchedules       ClassSchedule[]
 
   @@index([gymId])
 }
@@ -552,4 +557,59 @@ model PtSession {
   @@index([gymId])
   @@index([memberId])
   @@index([trainerId])
+}
+
+model Class {
+  id          String          @id @default(uuid())
+  gymId       String
+  name        String
+  description String?
+  isActive    Boolean         @default(true)
+  createdAt   DateTime        @default(now())
+
+  gym         Gym             @relation(fields: [gymId], references: [id])
+  schedules   ClassSchedule[]
+
+  @@index([gymId])
+}
+
+model ClassSchedule {
+  id        String         @id @default(uuid())
+  gymId     String
+  classId   String
+  trainerId String?
+  dayOfWeek Int
+  startTime String
+  endTime   String
+  capacity  Int            @default(20)
+  isActive  Boolean        @default(true)
+  createdAt DateTime       @default(now())
+
+  gym       Gym            @relation(fields: [gymId], references: [id])
+  class     Class          @relation(fields: [classId], references: [id])
+  trainer   Trainer?       @relation(fields: [trainerId], references: [id])
+  bookings  ClassBooking[]
+
+  @@index([gymId])
+  @@index([classId])
+  @@index([trainerId])
+}
+
+model ClassBooking {
+  id          String        @id @default(uuid())
+  gymId       String
+  scheduleId  String
+  memberId    String
+  bookingDate DateTime
+  status      String        @default("booked") // booked, attended, cancelled
+  createdAt   DateTime      @default(now())
+
+  gym         Gym           @relation(fields: [gymId], references: [id])
+  schedule    ClassSchedule @relation(fields: [scheduleId], references: [id])
+  member      Member        @relation(fields: [memberId], references: [id])
+
+  @@index([gymId])
+  @@index([scheduleId])
+  @@index([memberId])
+  @@unique([memberId, scheduleId, bookingDate])
 }
