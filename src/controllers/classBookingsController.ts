@@ -12,14 +12,16 @@ export const getAll = async (
   res: Response,
 ): Promise<void> => {
   const { memberId, scheduleId, date } = req.query;
+  const memberIdStr = typeof memberId === 'string' ? memberId : undefined;
+  const scheduleIdStr = typeof scheduleId === 'string' ? scheduleId : undefined;
   const parsedDate = date ? new Date(String(date)) : undefined;
 
   try {
     const bookings = await prisma.classBooking.findMany({
       where: {
         gymId: req.gymId,
-        ...(memberId && { memberId: String(memberId) }),
-        ...(scheduleId && { scheduleId: String(scheduleId) }),
+        ...(memberIdStr && { memberId: memberIdStr }),
+        ...(scheduleIdStr && { scheduleId: scheduleIdStr }),
         ...(parsedDate && { bookingDate: parsedDate }),
       },
       include: {
