@@ -67,18 +67,18 @@ const LAST = [
  */
 const COHORTS = [
   // Comfortably active — expiry well in the future.
-  { kind: 'active', count: 10, startedDaysAgo: () => between(3, 20) },
+  { kind: 'active', count: 20, startedDaysAgo: () => between(3, 20) },
   // Inside the 7-day warning window the app derives on read. On the 30-day
   // plan, starting 24-29 days ago puts the expiry 1-6 days out.
-  { kind: 'expiring', count: 4, startedDaysAgo: () => between(24, 29) },
+  { kind: 'expiring', count: 10, startedDaysAgo: () => between(24, 29) },
   // Expired recently: the renewal call list.
-  { kind: 'expired', count: 4, startedDaysAgo: () => between(33, 50) },
+  { kind: 'expired', count: 8, startedDaysAgo: () => between(33, 50) },
   // Expired long enough that the app treats them as off the roster (60+ days).
-  { kind: 'lapsed', count: 3, startedDaysAgo: () => between(95, 140) },
+  { kind: 'lapsed', count: 6, startedDaysAgo: () => between(95, 140) },
   // Registered but never sold anything — the "No membership" tab.
-  { kind: 'none', count: 2, startedDaysAgo: () => 0 },
+  { kind: 'none', count: 3, startedDaysAgo: () => 0 },
   // Bought, then called it off. Should never read as active anywhere.
-  { kind: 'cancelled', count: 2, startedDaysAgo: () => between(10, 40) },
+  { kind: 'cancelled', count: 3, startedDaysAgo: () => between(10, 40) },
 ] as const;
 
 const SUPPLEMENTS = [
@@ -106,11 +106,41 @@ const DIET_PLANS = [
 ] as const;
 
 async function main(): Promise<void> {
-  const gymName = arg('--gym');
+  const email = arg('--email');
+  let gym;
 
-  let gym = gymName
-    ? await prisma.gym.findFirst({ where: { name: gymName } })
-    : await prisma.gym.findFirst({ orderBy: { createdAt: 'asc' } });
+  if (email) {
+    const emailLower = email.trim().toLowerCase();
+    let user = await prisma.user.findFirst({ where: { email: emailLower } });
+    if (!user) {
+      console.log(`User "${emailLower}" not found. Auto-creating gym and owner account...`);
+      gym = await prisma.gym.create({
+        data: {
+          name: "Powerhouse Gym",
+          ownerName: "Faisal Ghafoor",
+        }
+      });
+      const bcrypt = await import('bcryptjs');
+      const passwordHash = await bcrypt.default.hash('password123', 10);
+      user = await prisma.user.create({
+        data: {
+          gymId: gym.id,
+          email: emailLower,
+          name: "Faisal Ghafoor",
+          passwordHash,
+          role: "owner",
+          isActive: true,
+        }
+      });
+      console.log(`Created owner account: ${emailLower} / password123`);
+    }
+    gym = await prisma.gym.findUnique({ where: { id: user.gymId } });
+  } else {
+    const gymName = arg('--gym');
+    gym = gymName
+      ? await prisma.gym.findFirst({ where: { name: gymName } })
+      : await prisma.gym.findFirst({ orderBy: { createdAt: 'asc' } });
+  }
 
   if (!gym) {
     console.log("No gym found in database. Creating default 'Powerhouse Gym' and owner...");
@@ -178,6 +208,7 @@ async function main(): Promise<void> {
     const exists = await prisma.supplement.findFirst({ where: { gymId: gym.id, name: s.name } });
     if (!exists) await prisma.supplement.create({ data: { ...s, gymId: gym.id } });
   }
+  const supplements = await prisma.supplement.findMany({ where: { gymId: gym.id } });
 
   // --- members, memberships, payments, attendance -----------------------
   let created = 0;
@@ -312,15 +343,42 @@ async function main(): Promise<void> {
           },
         });
       }
+
+      // Seed some supplement sales
+      if (rand() > 0.6 && supplements.length) {
+        const item = pick(supplements);
+        if (item.stock > 0) {
+          await prisma.payment.create({
+            data: {
+              gymId: gym.id,
+              memberId: member.id,
+              type: 'supplement',
+              amount: item.price,
+              method: rand() > 0.4 ? 'cash' : 'online',
+              status: 'paid',
+              paymentDate: daysAgo(between(1, 20)),
+              notes: `Purchased ${item.name}`,
+            },
+          });
+          // Decrement stock
+          await prisma.supplement.update({
+            where: { id: item.id },
+            data: { stock: { decrement: 1 } },
+          });
+          paymentsMade++;
+        }
+      }
     }
   }
 
   console.log(
-    `Done — ${created} members, ${paymentsMade} payments, ${checkins} check-ins, `
-    + `${SUPPLEMENTS.length} supplements, ${WORKOUT_PLANS.length} workout and ${DIET_PLANS.length} diet plans.`,
+    `Done — ${created} members, ${paymentsMade} payments, ${checkins} check-ins, ${supplements.length} supplements, ${workoutPlans.length} workout and ${dietPlans.length} diet plans.`,
   );
 }
 
 main()
-  .catch((e: unknown) => { console.error(e); process.exit(1); })
-  .finally(() => void prisma.$disconnect());
+  .catch(err => {
+    console.error(err);
+    process.exit(1);
+  })
+  .finally(() => prisma.$disconnect());
