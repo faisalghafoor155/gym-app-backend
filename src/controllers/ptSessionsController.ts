@@ -12,14 +12,19 @@ export const getAll = async (
   res: Response,
 ): Promise<void> => {
   const { trainerId, memberId, status, paymentStatus } = req.query;
+  const trainerIdStr = typeof trainerId === 'string' ? trainerId : undefined;
+  const memberIdStr = typeof memberId === 'string' ? memberId : undefined;
+  const statusStr = typeof status === 'string' ? status : undefined;
+  const paymentStatusStr = typeof paymentStatus === 'string' ? paymentStatus : undefined;
+
   try {
     const sessions = await prisma.ptSession.findMany({
       where: {
         gymId: req.gymId,
-        ...(trainerId && { trainerId: String(trainerId) }),
-        ...(memberId && { memberId: String(memberId) }),
-        ...(status && { status: String(status) }),
-        ...(paymentStatus && { paymentStatus: String(paymentStatus) }),
+        ...(trainerIdStr && { trainerId: trainerIdStr }),
+        ...(memberIdStr && { memberId: memberIdStr }),
+        ...(statusStr && { status: statusStr }),
+        ...(paymentStatusStr && { paymentStatus: paymentStatusStr }),
       },
       include: {
         member: { select: { id: true, name: true, memberNo: true } },
