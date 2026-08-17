@@ -189,6 +189,7 @@ const memberBase = {
   dateOfBirth: birthDate,
   address: optionalText(500),
   emergencyContact: optionalText(100),
+  trainerId: uuid.or(z.literal("").transform(() => null)).nullish(),
 };
 
 // Membership details are no longer part of a member. A member can be created
@@ -539,6 +540,30 @@ export const monthlyCollectionQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
 });
 
+export const createTrainerSchema = z.object({
+  name: name,
+  phone: optionalText(50),
+  specialization: optionalText(100),
+  commissionPercentage: z.coerce.number().min(0).max(100).default(0),
+});
+
+export const updateTrainerSchema = createTrainerSchema.partial();
+
+export const createPtSessionSchema = z.object({
+  memberId: uuid,
+  trainerId: uuid,
+  sessionDate: z.coerce.date(),
+  priceCharged: money,
+  status: z.enum(['scheduled', 'completed', 'cancelled']).optional().default('scheduled'),
+  paymentStatus: z.enum(['unpaid', 'paid']).optional().default('unpaid'),
+});
+
+export const updatePtSessionSchema = z.object({
+  sessionDate: z.coerce.date().optional(),
+  status: z.enum(['scheduled', 'completed', 'cancelled']).optional(),
+  paymentStatus: z.enum(['unpaid', 'paid']).optional(),
+});
+
 // --- inferred request-body types ---------------------------------------
 
 export type RegisterBody = z.infer<typeof registerSchema>;
@@ -583,5 +608,10 @@ export type SellSupplementBody = z.infer<typeof sellSupplementSchema>;
 export type RestockSupplementBody = z.infer<typeof restockSupplementSchema>;
 export type SalesReportQuery = z.infer<typeof salesReportQuerySchema>;
 export type IdParam = z.infer<typeof idParam>;
+
+export type CreateTrainerBody = z.infer<typeof createTrainerSchema>;
+export type UpdateTrainerBody = z.infer<typeof updateTrainerSchema>;
+export type CreatePtSessionBody = z.infer<typeof createPtSessionSchema>;
+export type UpdatePtSessionBody = z.infer<typeof updatePtSessionSchema>;
 
 export type Gender = (typeof GENDERS)[number];

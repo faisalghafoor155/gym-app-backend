@@ -45,6 +45,8 @@ const memberFields = {
   emergencyContact: true,
   status: true,
   createdAt: true,
+  trainerId: true,
+  trainer: { select: { id: true, name: true } },
 } as const;
 
 /**

@@ -75,6 +75,8 @@ model Gym {
   membershipPlans MembershipPlan[]
   memberships     Membership[]
   auditLogs       AuditLog[]
+  trainers        Trainer[]
+  ptSessions      PtSession[]
 }
 
 /// Every account that can sign in. The first user created for a gym is its
@@ -176,6 +178,10 @@ model Member {
   memberships     Membership[]
   supplementSales SupplementSale[]
   user            User?
+
+  trainerId       String?
+  trainer         Trainer?         @relation(fields: [trainerId], references: [id])
+  ptSessions      PtSession[]
 
   @@unique([gymId, memberNo])
   @@index([gymId])
@@ -508,4 +514,42 @@ model SupplementSale {
   @@index([gymId, soldAt])
   @@index([supplementId])
   @@index([memberId])
+}
+
+model Trainer {
+  id                   String      @id @default(uuid())
+  gymId                String
+  name                 String
+  phone                String?
+  specialization       String?
+  commissionPercentage Decimal     @default(0.00) @db.Decimal(5, 2)
+  isActive             Boolean     @default(true)
+  createdAt            DateTime    @default(now())
+
+  gym                  Gym         @relation(fields: [gymId], references: [id])
+  members              Member[]
+  ptSessions           PtSession[]
+
+  @@index([gymId])
+}
+
+model PtSession {
+  id                String   @id @default(uuid())
+  gymId             String
+  memberId          String
+  trainerId         String
+  sessionDate       DateTime
+  priceCharged      Decimal  @db.Decimal(10, 2)
+  trainerCommission Decimal  @db.Decimal(10, 2)
+  status            String   @default("scheduled") // scheduled, completed, cancelled
+  paymentStatus     String   @default("unpaid") // unpaid, paid
+  createdAt         DateTime @default(now())
+
+  gym               Gym      @relation(fields: [gymId], references: [id])
+  member            Member   @relation(fields: [memberId], references: [id])
+  trainer           Trainer  @relation(fields: [trainerId], references: [id])
+
+  @@index([gymId])
+  @@index([memberId])
+  @@index([trainerId])
 }

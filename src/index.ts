@@ -19,6 +19,8 @@ import attendanceRoutes from "./routes/attendance.js";
 import paymentsRoutes from "./routes/payments.js";
 import plansRoutes from "./routes/plans.js";
 import supplementsRoutes from "./routes/supplements.js";
+import trainersRoutes from "./routes/trainers.js";
+import ptSessionsRoutes from "./routes/ptSessions.js";
 import { startJobs } from "./jobs/index.js";
 
 // Fail loudly at boot rather than turning every login into a generic 500.
@@ -120,6 +122,8 @@ app.use("/api/attendance", attendanceRoutes);
 app.use("/api/payments", paymentsRoutes);
 app.use("/api/plans", plansRoutes);
 app.use("/api/supplements", supplementsRoutes);
+app.use("/api/trainers", trainersRoutes);
+app.use("/api/pt-sessions", ptSessionsRoutes);
 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });
