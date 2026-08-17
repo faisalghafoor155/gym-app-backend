@@ -2,6 +2,7 @@ import { Router } from 'express';
 import auth from '../middleware/auth.js';
 import validate from '../middleware/validate.js';
 import { requireOwner } from '../middleware/requireRole.js';
+import { requirePermission } from '../middleware/requirePermission.js';
 import { authed } from '../types.js';
 import {
   idParam, createStaffSchema, createMemberLoginSchema,
@@ -15,20 +16,17 @@ const router = Router();
 
 router.use(auth);
 
-// Every route here is the owner's: who can sign in to the gym, and what they
-// may do. The list alone carries each account's name, email and role, which is
-// not something the front desk needs to run the day — so it is gated with the
-// rest rather than left open. Enforced here rather than only by hiding the
-// page, because a hidden nav link is not access control.
-router.use(requireOwner);
+// Staff list and creating accounts is for the owner and anyone with the
+// 'canManageStaff' permission (usually a Manager).
+router.get('/', requirePermission('canManageStaff'), authed(getAll));
 
-router.get('/', authed(getAll));
+router.post('/staff', requirePermission('canManageStaff'), validate(createStaffSchema), authed(createStaff));
+router.post('/member-login', requirePermission('canManageStaff'), validate(createMemberLoginSchema), authed(createMemberLogin));
 
-router.post('/staff', validate(createStaffSchema), authed(createStaff));
-router.post('/member-login', validate(createMemberLoginSchema), authed(createMemberLogin));
-router.post('/transfer-ownership', validate(transferOwnershipSchema), authed(transferOwnership));
+// Transferring the whole gym is strictly the owner's.
+router.post('/transfer-ownership', requireOwner, validate(transferOwnershipSchema), authed(transferOwnership));
 
-router.put('/:id', validate(idParam, 'params'), validate(updateUserSchema), authed(update));
-router.delete('/:id', validate(idParam, 'params'), authed(remove));
+router.put('/:id', requirePermission('canModifyStaff'), validate(idParam, 'params'), validate(updateUserSchema), authed(update));
+router.delete('/:id', requirePermission('canModifyStaff'), validate(idParam, 'params'), authed(remove));
 
 export default router;

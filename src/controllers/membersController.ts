@@ -1,20 +1,50 @@
-import type { Response } from 'express';
-import type { Prisma } from '@prisma/client';
-import prisma from '../db.js';
-import { audit, diff } from '../services/audit.js';
+/** @format */
+
+import type { Response } from "express";
+import type { Prisma } from "@prisma/client";
+import prisma from "../db.js";
+import { audit, diff } from "../services/audit.js";
 import {
-  addDays, currentMembershipWhere, effectiveMemberStatus, formatMemberNo,
-  memberStatusWhere, toView, withPlan,
-} from '../services/membership.js';
-import type { AuthedRequest } from '../types.js';
+  addDays,
+  currentMembershipWhere,
+  effectiveMemberStatus,
+  formatMemberNo,
+  memberStatusWhere,
+  toView,
+  withPlan,
+} from "../services/membership.js";
+import {
+  isS3Configured,
+  uploadPhoto,
+  deletePhoto,
+  base64ToBuffer,
+  extractFilename,
+} from "../services/s3.js";
+import type { AuthedRequest } from "../types.js";
 import type {
-  CreateMemberBody, UpdateMemberBody, IdParam, MemberQuery, MemberStatusFilter,
-} from '../schemas.js';
+  CreateMemberBody,
+  UpdateMemberBody,
+  IdParam,
+  MemberQuery,
+  MemberStatusFilter,
+} from "../schemas.js";
 
 const memberFields = {
-  id: true, gymId: true, memberNo: true, name: true, email: true, phone: true,
-  photo: true, gender: true, dateOfBirth: true, address: true,
-  emergencyContact: true, status: true, createdAt: true,
+  id: true,
+  gymId: true,
+  memberNo: true,
+  name: true,
+  email: true,
+  phone: true,
+  photo: true,
+  photoKey: true,
+  photoUrl: true,
+  gender: true,
+  dateOfBirth: true,
+  address: true,
+  emergencyContact: true,
+  status: true,
+  createdAt: true,
 } as const;
 
 /**
@@ -24,7 +54,7 @@ const memberFields = {
  */
 const currentMembership = {
   where: currentMembershipWhere,
-  orderBy: { createdAt: 'desc' },
+  orderBy: { createdAt: "desc" },
   take: 1,
   include: withPlan,
 } as const;
@@ -42,7 +72,10 @@ type MemberRow = Prisma.MemberGetPayload<{
  * written to their row. `storedStatus` is kept alongside so a client can still
  * tell a hand-deactivated member from one the calendar retired.
  */
-const decorate = ({ memberships, ...member }: MemberRow, now: Date = new Date()) => {
+const decorate = (
+  { memberships, ...member }: MemberRow,
+  now: Date = new Date(),
+) => {
   const current = memberships[0] ?? null;
   return {
     ...member,
@@ -52,7 +85,10 @@ const decorate = ({ memberships, ...member }: MemberRow, now: Date = new Date())
   };
 };
 
-const selectMember = { ...memberFields, memberships: currentMembership } as const;
+const selectMember = {
+  ...memberFields,
+  memberships: currentMembership,
+} as const;
 
 /**
  * The same row without the photo, for the `all=true` pickers.
@@ -94,9 +130,9 @@ export const getAll = async (
       // Whatever the front desk has to hand: a name, a number, or a phone.
       ...(search && {
         OR: [
-          { name: { contains: search, mode: 'insensitive' as const } },
-          { memberNo: { contains: search, mode: 'insensitive' as const } },
-          { phone: { contains: search, mode: 'insensitive' as const } },
+          { name: { contains: search, mode: "insensitive" as const } },
+          { memberNo: { contains: search, mode: "insensitive" as const } },
+          { phone: { contains: search, mode: "insensitive" as const } },
         ],
       }),
       // No tab chosen means "everyone still on the books", which excludes the
@@ -110,20 +146,22 @@ export const getAll = async (
       // who the front desk is about to sell a renewal to.
       ...(status
         ? memberStatusWhere(status, now)
-        : (search || all) ? {} : { NOT: memberStatusWhere('lapsed', now) }),
+        : search || all
+          ? {}
+          : { NOT: memberStatusWhere("lapsed", now) }),
     };
 
     if (all) {
       const members = await prisma.member.findMany({
         where,
         select: selectMemberLite,
-        orderBy: { createdAt: 'desc' },
+        orderBy: { createdAt: "desc" },
       });
       // Same envelope as the paged response, so a caller never has to branch on
       // the shape of what came back — only `hasMore` differs, and it cannot be
       // true here by definition.
       res.json({
-        data: members.map(m => decorate({ ...m, photo: null }, now)),
+        data: members.map((m) => decorate({ ...m, photo: null }, now)),
         total: members.length,
         page: 1,
         limit: members.length,
@@ -142,26 +180,29 @@ export const getAll = async (
     // already selected, which would leave every other tab reading zero.
     const searchWhere = { gymId: req.gymId, ...(where.OR && { OR: where.OR }) };
     const countFor = (f: MemberStatusFilter) =>
-      prisma.member.count({ where: { ...searchWhere, ...memberStatusWhere(f, now) } });
+      prisma.member.count({
+        where: { ...searchWhere, ...memberStatusWhere(f, now) },
+      });
 
-    const [members, total, active, expiring, expired, lapsed, none] = await Promise.all([
-      prisma.member.findMany({
-        where,
-        select: selectMember,
-        orderBy: { createdAt: 'desc' },
-        skip: (page - 1) * limit,
-        take: limit,
-      }),
-      prisma.member.count({ where }),
-      countFor('active'),
-      countFor('expiring'),
-      countFor('expired'),
-      countFor('lapsed'),
-      countFor('none'),
-    ]);
+    const [members, total, active, expiring, expired, lapsed, none] =
+      await Promise.all([
+        prisma.member.findMany({
+          where,
+          select: selectMember,
+          orderBy: { createdAt: "desc" },
+          skip: (page - 1) * limit,
+          take: limit,
+        }),
+        prisma.member.count({ where }),
+        countFor("active"),
+        countFor("expiring"),
+        countFor("expired"),
+        countFor("lapsed"),
+        countFor("none"),
+      ]);
 
     res.json({
-      data: members.map(m => decorate(m, now)),
+      data: members.map((m) => decorate(m, now)),
       total,
       page,
       limit,
@@ -170,12 +211,16 @@ export const getAll = async (
       // lapsed — the same rule the page's All tab applies.
       counts: {
         all: active + expiring + expired + none,
-        active, expiring, expired, lapsed, none,
+        active,
+        expiring,
+        expired,
+        lapsed,
+        none,
       },
     });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: "Server error" });
   }
 };
 
@@ -189,13 +234,13 @@ export const getOne = async (
       select: selectMember,
     });
     if (!member) {
-      res.status(404).json({ error: 'Member not found' });
+      res.status(404).json({ error: "Member not found" });
       return;
     }
     res.json(decorate(member));
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: "Server error" });
   }
 };
 
@@ -212,20 +257,43 @@ export const create = async (
   req: AuthedRequest<Record<string, string>, unknown, CreateMemberBody>,
   res: Response,
 ): Promise<void> => {
-  const { planId, startDate, ...fields } = req.body;
+  const { planId, startDate, photo, ...fields } = req.body;
   try {
     if (planId) {
       const plan = await prisma.membershipPlan.findFirst({
         where: { id: planId, gymId: req.gymId },
       });
       if (!plan) {
-        res.status(404).json({ error: 'Membership plan not found' });
+        res.status(404).json({ error: "Membership plan not found" });
         return;
       }
       if (!plan.isActive) {
-        res.status(400).json({ error: 'That membership plan is no longer offered' });
+        res
+          .status(400)
+          .json({ error: "That membership plan is no longer offered" });
         return;
       }
+    }
+
+    // Handle photo upload to S3 before creating member
+    let photoData: { photo?: string; photoKey?: string; photoUrl?: string } =
+      {};
+    if (photo && isS3Configured()) {
+      try {
+        // Generate a temporary ID for the filename
+        const tempId = `new-${Date.now()}`;
+        const buffer = base64ToBuffer(photo);
+        const filename = extractFilename(photo, `member-${tempId}`);
+        const { key, url } = await uploadPhoto(buffer, filename, tempId);
+        photoData = { photoKey: key, photoUrl: url };
+      } catch (uploadError) {
+        console.error("Photo upload failed:", uploadError);
+        res.status(400).json({ error: "Failed to upload photo" });
+        return;
+      }
+    } else if (photo && !isS3Configured()) {
+      // Fallback to base64 storage if S3 not configured
+      photoData = { photo };
     }
 
     const member = await prisma.$transaction(async (tx) => {
@@ -242,12 +310,15 @@ export const create = async (
           gymId: req.gymId,
           memberNo: formatMemberNo(gym.memberSeq),
           ...fields,
+          ...photoData,
         },
         select: memberFields,
       });
 
       if (planId) {
-        const plan = await tx.membershipPlan.findUniqueOrThrow({ where: { id: planId } });
+        const plan = await tx.membershipPlan.findUniqueOrThrow({
+          where: { id: planId },
+        });
         const start = startDate ?? new Date();
         const expiry = addDays(start, plan.durationDays);
 
@@ -274,8 +345,8 @@ export const create = async (
     const view = decorate(full);
 
     await audit(req, {
-      action: 'member.create',
-      entity: 'member',
+      action: "member.create",
+      entity: "member",
       entityId: member.id,
       entityLabel: `${member.memberNo} · ${member.name}`,
       after: { ...member, membership: view.currentMembership },
@@ -284,15 +355,21 @@ export const create = async (
     res.status(201).json(view);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: "Server error" });
   }
 };
 
 /** Fields worth recording a change to. Photos are excluded — "photo changed"
  *  is noise, and the data-URL itself must never reach an audit row. */
 const AUDITED_MEMBER_FIELDS = [
-  'name', 'email', 'phone', 'gender', 'dateOfBirth', 'address',
-  'emergencyContact', 'status',
+  "name",
+  "email",
+  "phone",
+  "gender",
+  "dateOfBirth",
+  "address",
+  "emergencyContact",
+  "status",
 ] as const;
 
 export const update = async (
@@ -300,15 +377,62 @@ export const update = async (
   res: Response,
 ): Promise<void> => {
   const { id } = req.params;
-  const { name, email, phone, photo, gender, dateOfBirth, address, emergencyContact } = req.body;
+  const {
+    name,
+    email,
+    phone,
+    photo,
+    gender,
+    dateOfBirth,
+    address,
+    emergencyContact,
+  } = req.body;
   try {
     const existing = await prisma.member.findFirst({
       where: { id, gymId: req.gymId },
       select: memberFields,
     });
     if (!existing) {
-      res.status(404).json({ error: 'Member not found' });
+      res.status(404).json({ error: "Member not found" });
       return;
+    }
+
+    let photoData: {
+      photo?: string | null;
+      photoKey?: string | null;
+      photoUrl?: string | null;
+    } = {};
+
+    // Handle photo upload to S3 if provided and S3 is configured
+    if (photo !== undefined) {
+      if (photo === null) {
+        // Delete existing photo
+        if (existing.photoKey) {
+          await deletePhoto(existing.photoKey);
+        }
+        photoData = { photo: null, photoKey: null, photoUrl: null };
+      } else if (photo && isS3Configured()) {
+        // Upload new photo to S3
+        try {
+          const buffer = base64ToBuffer(photo);
+          const filename = extractFilename(photo, `member-${id}`);
+          const { key, url } = await uploadPhoto(buffer, filename, id);
+
+          // Delete old photo if exists
+          if (existing.photoKey) {
+            await deletePhoto(existing.photoKey);
+          }
+
+          photoData = { photo: null, photoKey: key, photoUrl: url };
+        } catch (uploadError) {
+          console.error("Photo upload failed:", uploadError);
+          res.status(400).json({ error: "Failed to upload photo" });
+          return;
+        }
+      } else if (photo && !isS3Configured()) {
+        // Fallback to base64 storage if S3 not configured
+        photoData = { photo };
+      }
     }
 
     await prisma.member.update({
@@ -317,7 +441,7 @@ export const update = async (
         ...(name && { name }),
         ...(email !== undefined && { email }),
         ...(phone !== undefined && { phone }),
-        ...(photo !== undefined && { photo }),
+        ...photoData,
         ...(gender !== undefined && { gender }),
         ...(dateOfBirth !== undefined && { dateOfBirth }),
         ...(address !== undefined && { address }),
@@ -334,8 +458,8 @@ export const update = async (
     const changed = diff(existing, full, AUDITED_MEMBER_FIELDS);
     if (changed) {
       await audit(req, {
-        action: 'member.update',
-        entity: 'member',
+        action: "member.update",
+        entity: "member",
         entityId: id,
         entityLabel: `${existing.memberNo} · ${full.name}`,
         ...changed,
@@ -345,7 +469,176 @@ export const update = async (
     res.json(decorate(full));
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+const parseCsvLine = (line: string): string[] => {
+  const values: string[] = [];
+  let current = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (char === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (char === "," && !inQuotes) {
+      values.push(current);
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+
+  values.push(current);
+  return values.map((value) => value.trim());
+};
+
+export const importMembers = async (
+  req: AuthedRequest<Record<string, string>, unknown, { csv: string }>,
+  res: Response,
+): Promise<void> => {
+  const { csv } = req.body;
+
+  try {
+    const rows = csv
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    if (rows.length < 2) {
+      res.status(400).json({
+        error: "CSV must include a header row and at least one member row",
+      });
+      return;
+    }
+
+    const header = parseCsvLine(rows[0]);
+    const expected = [
+      "name",
+      "email",
+      "phone",
+      "gender",
+      "dateOfBirth",
+      "address",
+      "emergencyContact",
+    ];
+    const index = new Map(header.map((name, idx) => [name.toLowerCase(), idx]));
+
+    const missing = expected.filter((key) => !index.has(key));
+    if (missing.length > 0 && missing.length < expected.length) {
+      // allow a minimal CSV with just name and optional contact fields
+    }
+
+    interface ImportedMemberData {
+      name: string;
+      email?: string;
+      phone?: string;
+      gender?: string;
+      dateOfBirth?: string;
+      address?: string;
+      emergencyContact?: string;
+    }
+
+    const createData: ImportedMemberData[] = [];
+    const errors: string[] = [];
+    const seen = new Set<string>();
+
+    for (let i = 1; i < rows.length; i++) {
+      const values = parseCsvLine(rows[i]);
+      const row: Record<string, string> = {};
+      for (const [key, idx] of index.entries()) {
+        row[key] = values[idx] ?? "";
+      }
+
+      const name = (row.name ?? "").trim();
+      if (!name) {
+        errors.push(`Row ${i + 1}: name is required`);
+        continue;
+      }
+
+      const email = (row.email ?? "").trim();
+      const phone = (row.phone ?? "").trim();
+      const dedupeKey = `${(email || phone || "").toLowerCase()}`;
+      if (dedupeKey && seen.has(dedupeKey)) {
+        errors.push(`Row ${i + 1}: duplicate contact value in this CSV`);
+        continue;
+      }
+      if (dedupeKey) seen.add(dedupeKey);
+
+      const existing = await prisma.member.findFirst({
+        where: {
+          gymId: req.gymId,
+          OR: [
+            ...(email
+              ? [
+                  {
+                    email: {
+                      equals: email.toLowerCase(),
+                      mode: "insensitive" as const,
+                    },
+                  },
+                ]
+              : []),
+            ...(phone
+              ? [{ phone: { equals: phone, mode: "insensitive" as const } }]
+              : []),
+          ],
+        },
+        select: { id: true },
+      });
+
+      if (existing) {
+        errors.push(
+          `Row ${i + 1}: member with this email or phone already exists`,
+        );
+        continue;
+      }
+
+      const memberData: ImportedMemberData = {
+        name,
+        ...(email ? { email: email.toLowerCase() } : {}),
+        ...(phone ? { phone } : {}),
+        ...(row.gender ? { gender: row.gender } : {}),
+        ...(row.dateOfBirth
+          ? { dateOfBirth: new Date(row.dateOfBirth).toISOString() }
+          : {}),
+        ...(row.address ? { address: row.address } : {}),
+        ...(row.emergencyContact
+          ? { emergencyContact: row.emergencyContact }
+          : {}),
+      };
+      createData.push(memberData);
+    }
+
+    const createdMembers = [] as string[];
+    for (const memberData of createData) {
+      const gym = await prisma.gym.update({
+        where: { id: req.gymId },
+        data: { memberSeq: { increment: 1 } },
+        select: { memberSeq: true },
+      });
+
+      const created = await prisma.member.create({
+        data: {
+          gymId: req.gymId,
+          memberNo: formatMemberNo(gym.memberSeq),
+          ...memberData,
+        },
+        select: { id: true },
+      });
+      createdMembers.push(created.id);
+    }
+
+    res.json({ created: createdMembers.length, errors });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
   }
 };
 
@@ -360,20 +653,26 @@ export const remove = async (
       select: memberFields,
     });
     if (!existing) {
-      res.status(404).json({ error: 'Member not found' });
+      res.status(404).json({ error: "Member not found" });
       return;
+    }
+
+    // Delete photo from S3 if it exists
+    if (existing.photoKey) {
+      await deletePhoto(existing.photoKey);
     }
 
     // Every relation is ON DELETE RESTRICT, so children go first. The counts
     // go into the audit entry: how much history went with the member is the
     // part worth knowing afterwards.
     const removed = await prisma.$transaction(async (tx) => {
-      const [memberPlans, attendance, payments, memberships] = await Promise.all([
-        tx.memberPlan.deleteMany({ where: { memberId: id } }),
-        tx.attendance.deleteMany({ where: { memberId: id } }),
-        tx.payment.deleteMany({ where: { memberId: id } }),
-        tx.membership.deleteMany({ where: { memberId: id } }),
-      ]);
+      const [memberPlans, attendance, payments, memberships] =
+        await Promise.all([
+          tx.memberPlan.deleteMany({ where: { memberId: id } }),
+          tx.attendance.deleteMany({ where: { memberId: id } }),
+          tx.payment.deleteMany({ where: { memberId: id } }),
+          tx.membership.deleteMany({ where: { memberId: id } }),
+        ]);
       await tx.member.delete({ where: { id } });
       return {
         memberPlans: memberPlans.count,
@@ -384,16 +683,16 @@ export const remove = async (
     });
 
     await audit(req, {
-      action: 'member.delete',
-      entity: 'member',
+      action: "member.delete",
+      entity: "member",
       entityId: id,
       entityLabel: `${existing.memberNo} · ${existing.name}`,
       before: { ...existing, deletedWith: removed },
     });
 
-    res.json({ message: 'Member deleted' });
+    res.json({ message: "Member deleted" });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: "Server error" });
   }
 };

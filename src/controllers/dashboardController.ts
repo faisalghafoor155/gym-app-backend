@@ -6,6 +6,7 @@ import {
 } from '../services/membership.js';
 import { sum } from '../services/money.js';
 import type { AuthedRequest } from '../types.js';
+import { hasPermission } from '../services/permissions.js';
 
 const memberSummary = {
   member: { select: { id: true, memberNo: true, name: true, phone: true } },
@@ -54,6 +55,7 @@ export const getStats = async (req: AuthedRequest, res: Response): Promise<void>
     const gymId = req.gymId;
     // Money is owner-only, so the queries behind it are not even run for staff.
     const isOwner = req.role === 'owner';
+    const canViewReports = isOwner || (req.role === 'staff' && req.staffPermission && hasPermission(req.staffPermission, 'canViewReports'));
 
     // Counts run off Membership now that a member's dates live there. Only
     // `active` rows are measured against the calendar — a cancelled or
@@ -109,7 +111,7 @@ export const getStats = async (req: AuthedRequest, res: Response): Promise<void>
         select: { checkedInAt: true },
       }),
 
-      isOwner
+      canViewReports
         ? prisma.payment.findMany({
             where: { gymId, status: 'paid', paymentDate: { gte: revenueSince } },
             // `type` comes along so this month's takings can be split by what
@@ -118,7 +120,7 @@ export const getStats = async (req: AuthedRequest, res: Response): Promise<void>
             select: { amount: true, paymentDate: true, type: true },
           })
         : Promise.resolve([]),
-      isOwner
+      canViewReports
         ? prisma.payment.aggregate({
             where: { gymId, status: 'due' },
             _sum: { amount: true },
@@ -129,7 +131,7 @@ export const getStats = async (req: AuthedRequest, res: Response): Promise<void>
       // has not. Read from memberships rather than payments for the same
       // reason the monthly report is: a member who has paid nothing has no
       // payment row, and they are precisely the ones this counts.
-      isOwner
+      canViewReports
         ? prisma.membership.findMany({
             where: {
               gymId,
@@ -278,7 +280,7 @@ export const getStats = async (req: AuthedRequest, res: Response): Promise<void>
       peakHour: busiest.count > 0 ? busiest.hour : null,
       // Revenue keys are absent entirely for staff, not zeroed — a zero would
       // be a number they are not allowed to have, and a wrong one at that.
-      ...(isOwner && {
+      ...(canViewReports && {
         revenue: {
           thisMonth,
           lastMonth,

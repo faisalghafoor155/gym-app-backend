@@ -1,14 +1,21 @@
-import type { Response } from 'express';
-import { Prisma, MembershipStatus } from '@prisma/client';
-import prisma from '../db.js';
-import { audit, diff } from '../services/audit.js';
-import { toView, withPlan } from '../services/membership.js';
-import { sum, withMoney } from '../services/money.js';
-import type { AuthedRequest } from '../types.js';
+/** @format */
+
+import type { Response } from "express";
+import { Prisma, MembershipStatus } from "@prisma/client";
+import prisma from "../db.js";
+import { audit, diff } from "../services/audit.js";
+import { toView, withPlan } from "../services/membership.js";
+import { sum, withMoney } from "../services/money.js";
+import { hasPermission } from "../services/permissions.js";
+import type { AuthedRequest } from "../types.js";
 import type {
-  CreatePaymentBody, UpdatePaymentBody, PaymentQuery, PaymentSummaryQuery,
-  MonthlyCollectionQuery, IdParam,
-} from '../schemas.js';
+  CreatePaymentBody,
+  UpdatePaymentBody,
+  PaymentQuery,
+  PaymentSummaryQuery,
+  MonthlyCollectionQuery,
+  IdParam,
+} from "../schemas.js";
 
 /** A date filter names a day, not an instant. Without this a payment taken at
  *  2pm falls outside a range that ends on its own date. */
@@ -21,19 +28,24 @@ const endOfDay = (d: Date): Date => {
 /**
  * What this request is allowed to see of the payments table.
  *
- * The owner sees the gym's money. Staff see only what they took themselves —
+ * The owner sees the gym's money. Staff with the 'canViewPayments' permission
+ * also see everything. Other staff see only what they took themselves —
  * enough to check their own counter against their own till, and not the gym's
- * income. Returned as a `where` fragment rather than filtered afterwards so the
- * rows never leave the database in the first place; a post-filter would still
- * have read them, and would be one early `return` away from leaking them.
- *
- * `recordedById: req.userId` also excludes rows with a null recorder — payments
- * predating the column, or whose author has since been deleted. That is the
- * right way round: those are unattributed gym money, which is the owner's to
- * see, not the current staff member's.
+ * income.
  */
-const visibleTo = (req: AuthedRequest) =>
-  req.role === 'owner' ? {} : { recordedById: req.userId };
+const visibleTo = (req: AuthedRequest) => {
+  if (req.role === "owner") return {};
+
+  // If staff has permission to view all payments, don't filter by recordedById
+  if (
+    req.staffPermission &&
+    hasPermission(req.staffPermission, "canViewPayments")
+  ) {
+    return {};
+  }
+
+  return { recordedById: req.userId };
+};
 
 /**
  * The payments list, newest first, paged.
@@ -66,9 +78,9 @@ export const getAll = async (
       ...(search && {
         member: {
           OR: [
-            { name: { contains: search, mode: 'insensitive' as const } },
-            { phone: { contains: search, mode: 'insensitive' as const } },
-            { memberNo: { contains: search, mode: 'insensitive' as const } },
+            { name: { contains: search, mode: "insensitive" as const } },
+            { phone: { contains: search, mode: "insensitive" as const } },
+            { memberNo: { contains: search, mode: "insensitive" as const } },
           ],
         },
       }),
@@ -83,13 +95,13 @@ export const getAll = async (
           // rows, so it tells them nothing they did not already know.
           recordedBy: { select: { id: true, name: true } },
         },
-        orderBy: { paymentDate: 'desc' },
+        orderBy: { paymentDate: "desc" },
         skip: (page - 1) * limit,
         take: limit,
       }),
       prisma.payment.count({ where }),
       prisma.payment.groupBy({
-        by: ['status'],
+        by: ["status"],
         where,
         _sum: { amount: true },
       }),
@@ -98,20 +110,20 @@ export const getAll = async (
     // groupBy omits a status entirely when nothing matches it. `sum` treats a
     // missing value as zero, so an absent group needs no special case.
     const totalFor = (s: string): number =>
-      sum(totals.filter(t => t.status === s).map(t => t._sum.amount));
+      sum(totals.filter((t) => t.status === s).map((t) => t._sum.amount));
 
     res.json({
-      data: payments.map(p => withMoney(p, 'amount')),
+      data: payments.map((p) => withMoney(p, "amount")),
       total,
       page,
       limit,
       hasMore: page * limit < total,
-      collected: totalFor('paid'),
-      outstanding: totalFor('due'),
+      collected: totalFor("paid"),
+      outstanding: totalFor("due"),
     });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: "Server error" });
   }
 };
 
@@ -120,11 +132,22 @@ export const create = async (
   res: Response,
 ): Promise<void> => {
   // Already validated and coerced by the route's schema.
-  const { memberId, amount, method, notes, status, type, membershipId, paymentDate } = req.body;
+  const {
+    memberId,
+    amount,
+    method,
+    notes,
+    status,
+    type,
+    membershipId,
+    paymentDate,
+  } = req.body;
   try {
-    const member = await prisma.member.findFirst({ where: { id: memberId, gymId: req.gymId } });
+    const member = await prisma.member.findFirst({
+      where: { id: memberId, gymId: req.gymId },
+    });
     if (!member) {
-      res.status(404).json({ error: 'Member not found' });
+      res.status(404).json({ error: "Member not found" });
       return;
     }
 
@@ -137,7 +160,7 @@ export const create = async (
         select: { id: true },
       });
       if (!membership) {
-        res.status(404).json({ error: 'Membership not found for this member' });
+        res.status(404).json({ error: "Membership not found for this member" });
         return;
       }
     }
@@ -147,10 +170,10 @@ export const create = async (
         memberId,
         gymId: req.gymId,
         amount,
-        method: method ?? 'cash',
+        method: method ?? "cash",
         notes,
-        status: status ?? 'paid',
-        type: type ?? 'membership',
+        status: status ?? "paid",
+        type: type ?? "membership",
         membershipId: membershipId ?? null,
         // Stamped from the session, never from the body: a staff member must
         // not be able to file their takings under somebody else's name.
@@ -164,21 +187,25 @@ export const create = async (
     });
 
     await audit(req, {
-      action: 'payment.create',
-      entity: 'payment',
+      action: "payment.create",
+      entity: "payment",
       entityId: payment.id,
       entityLabel: `${member.memberNo} · ${member.name} · Rs. ${payment.amount}`,
       after: {
-        memberId, amount: payment.amount.toNumber(), method: payment.method,
-        status: payment.status, type: payment.type,
-        membershipId: payment.membershipId, paymentDate: payment.paymentDate,
+        memberId,
+        amount: payment.amount.toNumber(),
+        method: payment.method,
+        status: payment.status,
+        type: payment.type,
+        membershipId: payment.membershipId,
+        paymentDate: payment.paymentDate,
       },
     });
 
-    res.status(201).json(withMoney(payment, 'amount'));
+    res.status(201).json(withMoney(payment, "amount"));
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: "Server error" });
   }
 };
 
@@ -191,14 +218,15 @@ export const update = async (
   res: Response,
 ): Promise<void> => {
   const { id } = req.params;
-  const { amount, method, notes, status, type, membershipId, paymentDate } = req.body;
+  const { amount, method, notes, status, type, membershipId, paymentDate } =
+    req.body;
   try {
     const existing = await prisma.payment.findFirst({
       where: { id, gymId: req.gymId },
       include: { member: { select: { name: true, memberNo: true } } },
     });
     if (!existing) {
-      res.status(404).json({ error: 'Payment not found' });
+      res.status(404).json({ error: "Payment not found" });
       return;
     }
 
@@ -207,11 +235,15 @@ export const update = async (
     // so `existing.memberId` is the right thing to check against.
     if (membershipId) {
       const membership = await prisma.membership.findFirst({
-        where: { id: membershipId, gymId: req.gymId, memberId: existing.memberId },
+        where: {
+          id: membershipId,
+          gymId: req.gymId,
+          memberId: existing.memberId,
+        },
         select: { id: true },
       });
       if (!membership) {
-        res.status(404).json({ error: 'Membership not found for this member' });
+        res.status(404).json({ error: "Membership not found for this member" });
         return;
       }
     }
@@ -225,7 +257,9 @@ export const update = async (
         ...(type && { type }),
         // Explicit null clears the link, which is how a payment logged against
         // the wrong membership gets corrected.
-        ...(membershipId !== undefined && { membershipId: membershipId ?? null }),
+        ...(membershipId !== undefined && {
+          membershipId: membershipId ?? null,
+        }),
         ...(notes !== undefined && { notes }),
         ...(paymentDate && { paymentDate }),
       },
@@ -239,12 +273,18 @@ export const update = async (
     });
 
     const changed = diff(existing, payment, [
-      'amount', 'method', 'status', 'type', 'membershipId', 'notes', 'paymentDate',
+      "amount",
+      "method",
+      "status",
+      "type",
+      "membershipId",
+      "notes",
+      "paymentDate",
     ]);
     if (changed) {
       await audit(req, {
-        action: 'payment.update',
-        entity: 'payment',
+        action: "payment.update",
+        entity: "payment",
         entityId: payment.id,
         entityLabel: `${existing.member.memberNo} · ${existing.member.name} · Rs. ${payment.amount}`,
         before: changed.before,
@@ -252,10 +292,10 @@ export const update = async (
       });
     }
 
-    res.json(withMoney(payment, 'amount'));
+    res.json(withMoney(payment, "amount"));
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: "Server error" });
   }
 };
 
@@ -272,28 +312,33 @@ export const remove = async (
       include: { member: { select: { name: true, memberNo: true } } },
     });
     if (!existing) {
-      res.status(404).json({ error: 'Payment not found' });
+      res.status(404).json({ error: "Payment not found" });
       return;
     }
 
     await prisma.payment.delete({ where: { id } });
 
     await audit(req, {
-      action: 'payment.delete',
-      entity: 'payment',
+      action: "payment.delete",
+      entity: "payment",
       entityId: existing.id,
       entityLabel: `${existing.member.memberNo} · ${existing.member.name} · Rs. ${existing.amount}`,
       before: {
-        memberId: existing.memberId, amount: existing.amount.toNumber(), method: existing.method,
-        status: existing.status, type: existing.type, membershipId: existing.membershipId,
-        notes: existing.notes, paymentDate: existing.paymentDate,
+        memberId: existing.memberId,
+        amount: existing.amount.toNumber(),
+        method: existing.method,
+        status: existing.status,
+        type: existing.type,
+        membershipId: existing.membershipId,
+        notes: existing.notes,
+        paymentDate: existing.paymentDate,
       },
     });
 
-    res.json({ message: 'Deleted' });
+    res.json({ message: "Deleted" });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: "Server error" });
   }
 };
 
@@ -314,7 +359,12 @@ export const remove = async (
  * instead of being folded into the totals.
  */
 export const getSummary = async (
-  req: AuthedRequest<Record<string, string>, unknown, unknown, PaymentSummaryQuery>,
+  req: AuthedRequest<
+    Record<string, string>,
+    unknown,
+    unknown,
+    PaymentSummaryQuery
+  >,
   res: Response,
 ): Promise<void> => {
   const { months } = req.query;
@@ -326,7 +376,7 @@ export const getSummary = async (
       prisma.payment.findMany({
         where: {
           gymId: req.gymId,
-          status: 'paid',
+          status: "paid",
           paymentDate: { gte: since },
         },
         select: { amount: true, paymentDate: true, type: true },
@@ -334,7 +384,7 @@ export const getSummary = async (
       // Outstanding is the whole ledger, not just this window — money owed from
       // four months ago is still owed today.
       prisma.payment.aggregate({
-        where: { gymId: req.gymId, status: 'due' },
+        where: { gymId: req.gymId, status: "due" },
         _sum: { amount: true },
         _count: true,
       }),
@@ -344,7 +394,7 @@ export const getSummary = async (
     // toISOString would bucket a late-evening payment into the next month for
     // any timezone ahead of UTC.
     const monthKey = (d: Date): string =>
-      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 
     type Bucket = {
       membership: Prisma.Decimal;
@@ -365,7 +415,11 @@ export const getSummary = async (
     // than a gap — a missing bar reads as "no data", which is a different claim.
     const buckets = new Map<string, Bucket>();
     for (let i = 0; i < months; i++) {
-      const d = new Date(now.getFullYear(), now.getMonth() - (months - 1) + i, 1);
+      const d = new Date(
+        now.getFullYear(),
+        now.getMonth() - (months - 1) + i,
+        1,
+      );
       buckets.set(monthKey(d), empty());
     }
 
@@ -381,8 +435,10 @@ export const getSummary = async (
 
     const byMonth = [...buckets].map(([month, b]) => ({
       month,
-      label: new Date(`${month}-01T00:00:00`)
-        .toLocaleDateString('en-PK', { month: 'short', year: 'numeric' }),
+      label: new Date(`${month}-01T00:00:00`).toLocaleDateString("en-PK", {
+        month: "short",
+        year: "numeric",
+      }),
       membership: b.membership.toNumber(),
       supplement: b.supplement.toNumber(),
       other: b.other.toNumber(),
@@ -397,7 +453,7 @@ export const getSummary = async (
       byMonth,
       // The window's own totals, so the page's header and its rows can never
       // disagree about the period they describe.
-      grandTotal: sum(rows.map(p => p.amount)),
+      grandTotal: sum(rows.map((p) => p.amount)),
       count: rows.length,
       thisMonth: byMonth.at(-1)?.total ?? 0,
       lastMonth: byMonth.at(-2)?.total ?? 0,
@@ -406,7 +462,7 @@ export const getSummary = async (
     });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: "Server error" });
   }
 };
 
@@ -423,17 +479,28 @@ export const getSummary = async (
  * the membership that is being counted instead, so including both would bill
  * the month twice, and the second is a term the gym agreed not to charge for.
  */
-const membershipsCovering = (gymId: string, start: Date, end: Date, search?: string) => ({
+const membershipsCovering = (
+  gymId: string,
+  start: Date,
+  end: Date,
+  search?: string,
+) => ({
   gymId,
   startDate: { lte: end },
   expiryDate: { gte: start },
-  status: { in: [MembershipStatus.active, MembershipStatus.expired, MembershipStatus.suspended] },
+  status: {
+    in: [
+      MembershipStatus.active,
+      MembershipStatus.expired,
+      MembershipStatus.suspended,
+    ],
+  },
   ...(search && {
     member: {
       OR: [
-        { name: { contains: search, mode: 'insensitive' as const } },
-        { phone: { contains: search, mode: 'insensitive' as const } },
-        { memberNo: { contains: search, mode: 'insensitive' as const } },
+        { name: { contains: search, mode: "insensitive" as const } },
+        { phone: { contains: search, mode: "insensitive" as const } },
+        { memberNo: { contains: search, mode: "insensitive" as const } },
       ],
     },
   }),
@@ -467,35 +534,37 @@ const unpaidForMonth = async (
       member: { select: { id: true, name: true, phone: true, memberNo: true } },
       // Settled money only. A row still marked `due` is the debt itself, so
       // counting it as payment would net the shortfall to zero.
-      payments: { where: { status: 'paid' }, select: { amount: true } },
+      payments: { where: { status: "paid" }, select: { amount: true } },
       ...withPlan,
     },
-    orderBy: { expiryDate: 'asc' },
+    orderBy: { expiryDate: "asc" },
   });
 
-  return memberships
-    .map(m => {
-      const view = toView(m);
-      const paid = sum(m.payments.map(p => p.amount));
-      return {
-        memberId: m.member.id,
-        memberNo: m.member.memberNo,
-        name: m.member.name,
-        phone: m.member.phone,
-        membership: view,
-        expected: view.pricePaid,
-        paid,
-        // Never negative: overpaying is not a debt, and a "-500 shortfall"
-        // would quietly cancel out somebody else's real one in the total.
-        shortfall: Math.max(0, view.pricePaid - paid),
-      };
-    })
-    // Fully settled memberships are not part of an unpaid list. Filtered after
-    // the sum rather than in SQL because the comparison is against a total
-    // Prisma cannot compute in the same query.
-    .filter(r => r.shortfall > 0)
-    // Biggest debt first — the order the gym would work the list in.
-    .sort((a, b) => b.shortfall - a.shortfall || a.name.localeCompare(b.name));
+  return (
+    memberships
+      .map((m) => {
+        const view = toView(m);
+        const paid = sum(m.payments.map((p) => p.amount));
+        return {
+          memberId: m.member.id,
+          memberNo: m.member.memberNo,
+          name: m.member.name,
+          phone: m.member.phone,
+          membership: view,
+          expected: view.pricePaid,
+          paid,
+          // Never negative: overpaying is not a debt, and a "-500 shortfall"
+          // would quietly cancel out somebody else's real one in the total.
+          shortfall: Math.max(0, view.pricePaid - paid),
+        };
+      })
+      // Fully settled memberships are not part of an unpaid list. Filtered after
+      // the sum rather than in SQL because the comparison is against a total
+      // Prisma cannot compute in the same query.
+      .filter((r) => r.shortfall > 0)
+      // Biggest debt first — the order the gym would work the list in.
+      .sort((a, b) => b.shortfall - a.shortfall || a.name.localeCompare(b.name))
+  );
 };
 
 /**
@@ -521,7 +590,12 @@ const unpaidForMonth = async (
  * picker, one search box, and one set of totals across the two.
  */
 export const getMonthlyCollection = async (
-  req: AuthedRequest<Record<string, string>, unknown, unknown, MonthlyCollectionQuery>,
+  req: AuthedRequest<
+    Record<string, string>,
+    unknown,
+    unknown,
+    MonthlyCollectionQuery
+  >,
   res: Response,
 ): Promise<void> => {
   const { month, search, view, includeDue, page, limit } = req.query;
@@ -533,11 +607,14 @@ export const getMonthlyCollection = async (
     const start = new Date(month.year, month.month - 1, 1, 0, 0, 0, 0);
     const end = new Date(month.year, month.month, 0, 23, 59, 59, 999);
 
-    const label = start.toLocaleDateString('en-PK', { month: 'long', year: 'numeric' });
+    const label = start.toLocaleDateString("en-PK", {
+      month: "long",
+      year: "numeric",
+    });
 
     // The unpaid side reads memberships, not payments, so it shares nothing
     // with the query below beyond the window and the search term.
-    if (view === 'unpaid') {
+    if (view === "unpaid") {
       const all = await unpaidForMonth(req.gymId, start, end, search);
       const paged = all.slice((page - 1) * limit, page * limit);
 
@@ -568,13 +645,13 @@ export const getMonthlyCollection = async (
     const where = {
       gymId: req.gymId,
       paymentDate: { gte: start, lte: end },
-      ...(!includeDue && { status: 'paid' }),
+      ...(!includeDue && { status: "paid" }),
       ...(search && {
         member: {
           OR: [
-            { name: { contains: search, mode: 'insensitive' as const } },
-            { phone: { contains: search, mode: 'insensitive' as const } },
-            { memberNo: { contains: search, mode: 'insensitive' as const } },
+            { name: { contains: search, mode: "insensitive" as const } },
+            { phone: { contains: search, mode: "insensitive" as const } },
+            { memberNo: { contains: search, mode: "insensitive" as const } },
           ],
         },
       }),
@@ -587,10 +664,12 @@ export const getMonthlyCollection = async (
     const rows = await prisma.payment.findMany({
       where,
       include: {
-        member: { select: { id: true, name: true, phone: true, memberNo: true } },
+        member: {
+          select: { id: true, name: true, phone: true, memberNo: true },
+        },
         recordedBy: { select: { id: true, name: true } },
       },
-      orderBy: { paymentDate: 'desc' },
+      orderBy: { paymentDate: "desc" },
     });
 
     interface Entry {
@@ -631,7 +710,7 @@ export const getMonthlyCollection = async (
         };
         byMember.set(p.memberId, row);
       }
-      if (p.status === 'paid') {
+      if (p.status === "paid") {
         row.paid = row.paid.plus(p.amount);
         // Only settled money dates the row: "last paid" pointing at an unpaid
         // entry would read as a payment that never happened.
@@ -666,9 +745,8 @@ export const getMonthlyCollection = async (
     // `all` carries both halves so the page can show who paid and who did not
     // without a second request — and, more importantly, so the two are read
     // against the same month and the same search rather than drifting apart.
-    const unpaid = view === 'all'
-      ? await unpaidForMonth(req.gymId, start, end, search)
-      : [];
+    const unpaid =
+      view === "all" ? await unpaidForMonth(req.gymId, start, end, search) : [];
 
     res.json({
       month: month.value,
@@ -676,7 +754,7 @@ export const getMonthlyCollection = async (
       from: start,
       to: end,
       view,
-      data: paged.map(r => ({
+      data: paged.map((r) => ({
         ...r,
         paid: r.paid.toNumber(),
         due: r.due.toNumber(),
@@ -691,15 +769,19 @@ export const getMonthlyCollection = async (
       page,
       limit,
       hasMore: page * limit < all.length,
-      collected: sum(rows.filter(p => p.status === 'paid').map(p => p.amount)),
-      outstanding: sum(rows.filter(p => p.status === 'due').map(p => p.amount)),
+      collected: sum(
+        rows.filter((p) => p.status === "paid").map((p) => p.amount),
+      ),
+      outstanding: sum(
+        rows.filter((p) => p.status === "due").map((p) => p.amount),
+      ),
       paymentCount: rows.length,
       shortfallTotal: unpaid.reduce((t, r) => t + r.shortfall, 0),
       expectedTotal: unpaid.reduce((t, r) => t + r.expected, 0),
     });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: "Server error" });
   }
 };
 
@@ -713,38 +795,157 @@ export const getMonthlyCollection = async (
  * owing half the fee. The two facts are reported separately rather than one
  * being used as a stand-in for the other.
  */
-export const getDue = async (req: AuthedRequest, res: Response): Promise<void> => {
+export const getDue = async (
+  req: AuthedRequest,
+  res: Response,
+): Promise<void> => {
   try {
     const expired = await prisma.membership.findMany({
       where: {
         gymId: req.gymId,
-        status: 'active',
+        status: "active",
         expiryDate: { lt: new Date() },
       },
       include: {
-        member: { select: { id: true, memberNo: true, name: true, phone: true } },
+        member: {
+          select: { id: true, memberNo: true, name: true, phone: true },
+        },
         // Only settled money counts towards what a membership has brought in;
         // a row still marked due is the debt, not a payment against it.
-        payments: { where: { status: 'paid' }, select: { amount: true } },
+        payments: { where: { status: "paid" }, select: { amount: true } },
         ...withPlan,
       },
-      orderBy: { expiryDate: 'asc' },
+      orderBy: { expiryDate: "asc" },
     });
 
-    res.json(expired.map(m => {
-      const view = toView(m);
-      const paid = sum(m.payments.map(p => p.amount));
-      return {
-        ...m.member,
-        membership: view,
-        paid,
-        // Never negative: overpaying is not a debt, and a "-500 outstanding"
-        // would quietly cancel out somebody else's real one in a total.
-        outstanding: Math.max(0, view.pricePaid - paid),
-      };
-    }));
+    res.json(
+      expired.map((m) => {
+        const view = toView(m);
+        const paid = sum(m.payments.map((p) => p.amount));
+        return {
+          ...m.member,
+          membership: view,
+          paid,
+          // Never negative: overpaying is not a debt, and a "-500 outstanding"
+          // would quietly cancel out somebody else's real one in a total.
+          outstanding: Math.max(0, view.pricePaid - paid),
+        };
+      }),
+    );
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+/**
+ * GET /api/payments/export
+ * Export all payments matching filters as CSV (streams full dataset)
+ */
+export const exportCsv = async (
+  req: AuthedRequest<Record<string, string>, unknown, unknown, PaymentQuery>,
+  res: Response,
+): Promise<void> => {
+  const { status, type, search, from, to } = req.query;
+  try {
+    const where = {
+      gymId: req.gymId,
+      ...visibleTo(req),
+      ...(status && { status }),
+      ...(type && { type }),
+      ...((from || to) && {
+        paymentDate: {
+          ...(from && { gte: from }),
+          ...(to && { lte: endOfDay(to) }),
+        },
+      }),
+      // Staff search by whatever they have to hand — a name or a phone.
+      ...(search && {
+        member: {
+          OR: [
+            { name: { contains: search, mode: "insensitive" as const } },
+            { phone: { contains: search, mode: "insensitive" as const } },
+            { memberNo: { contains: search, mode: "insensitive" as const } },
+          ],
+        },
+      }),
+    };
+
+    // Fetch ALL matching payments (no pagination limit)
+    const payments = await prisma.payment.findMany({
+      where,
+      include: {
+        member: { select: { name: true, phone: true, memberNo: true } },
+        recordedBy: { select: { id: true, name: true } },
+      },
+      orderBy: { paymentDate: "desc" },
+    });
+
+    if (payments.length === 0) {
+      res.status(400).json({ error: "No payments to export" });
+      return;
+    }
+
+    // Build CSV header
+    const headers = [
+      "Member No",
+      "Member",
+      "Phone",
+      "Amount",
+      "For",
+      "Method",
+      "Status",
+      "Date",
+      "Notes",
+    ];
+    if (req.role === "owner") {
+      headers.push("Taken by");
+    }
+
+    // Build CSV rows
+    const paymentTypeLabels: { [key: string]: string } = {
+      membership: "Membership",
+      supplement: "Supplement",
+      other: "Other",
+    };
+
+    const rows = payments.map((p) => [
+      p.member?.memberNo ?? "",
+      p.member?.name ?? "",
+      p.member?.phone ?? "",
+      p.amount.toString(),
+      paymentTypeLabels[p.type] || p.type,
+      p.method || "",
+      p.status,
+      new Date(p.paymentDate).toLocaleDateString(),
+      p.notes ?? "",
+      ...(req.role === "owner" ? [p.recordedBy?.name ?? ""] : []),
+    ]);
+
+    // Escape CSV values (handle commas and quotes)
+    const escapeCsvValue = (value: string): string => {
+      if (value.includes(",") || value.includes('"') || value.includes("\n")) {
+        return `"${value.replace(/"/g, '""')}"`;
+      }
+      return value;
+    };
+
+    // Build CSV content
+    const csvContent = [
+      headers.map(escapeCsvValue).join(","),
+      ...rows.map((row) => row.map(escapeCsvValue).join(",")),
+    ].join("\n");
+
+    // Send as file download
+    const timestamp = new Date().toISOString().split("T")[0];
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="payments-${timestamp}.csv"`,
+    );
+    res.send(csvContent);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to export CSV" });
   }
 };

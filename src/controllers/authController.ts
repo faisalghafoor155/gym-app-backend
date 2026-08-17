@@ -12,6 +12,10 @@ import { findValidInvite } from '../services/invite.js';
 import { verifyGoogleToken } from '../services/google.js';
 import { DEFAULT_PLANS } from '../services/membership.js';
 import { sendMail, passwordResetMail } from '../services/mail.js';
+import {
+  signTwoFactorChallenge, verifyTwoFactorChallenge,
+  verifyTOTPCode, consumeBackupCode,
+} from '../services/twoFactor.js';
 
 /** A reset link is short-lived; an old inbox should not be a way in. */
 const RESET_TTL_MS = 60 * 60 * 1000;
@@ -22,7 +26,7 @@ const RESET_TTL_MS = 60 * 60 * 1000;
  */
 const startSession = (res: Response, user: {
   id: string; name: string; email: string; role: string; memberId: string | null;
-  tokenVersion: number;
+  tokenVersion: number; staffPermission?: string | null;
   gym: { id: string; name: string; ownerName: string };
 }) => {
   setSessionCookie(res, user.id, user.tokenVersion);
@@ -30,6 +34,7 @@ const startSession = (res: Response, user: {
     user: {
       id: user.id, name: user.name, email: user.email,
       role: user.role, memberId: user.memberId,
+      staffPermission: user.staffPermission,
     },
     gym: { id: user.gym.id, name: user.gym.name, ownerName: user.gym.ownerName },
   };
@@ -38,6 +43,16 @@ const startSession = (res: Response, user: {
 const sessionInclude = {
   gym: { select: { id: true, name: true, ownerName: true } },
 } as const;
+
+/**
+ * The answer when the first factor passed but the account has a second one.
+ * No cookie, no lastLoginAt — the sign-in is not complete until the challenge
+ * comes back through /auth/two-factor/verify-login with a valid code.
+ */
+const startTwoFactorChallenge = (user: { id: string; tokenVersion: number }) => ({
+  requiresTwoFactor: true as const,
+  twoFactorToken: signTwoFactorChallenge(user.id, user.tokenVersion),
+});
 
 /** Public signup creates a NEW gym; the account that creates it is its owner. */
 export const register = async (
@@ -97,6 +112,63 @@ export const login = async (
       res.status(403).json({ error: 'This account has been deactivated' });
       return;
     }
+    if (user.twoFactorEnabled) {
+      res.json(startTwoFactorChallenge(user));
+      return;
+    }
+
+    await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
+    res.json(startSession(res, user));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * Completes a login that was answered with a 2FA challenge. The challenge
+ * token proves the first factor already passed; the code is the second.
+ * Either factor alone is useless, which is the whole point of 2FA.
+ *
+ * The code may be the 6-digit authenticator code or a backup code — the two
+ * are told apart by shape, and a backup code is consumed as it is used.
+ */
+export const verifyTwoFactorLogin = async (
+  req: Request<unknown, unknown, { token: string; code: string }>,
+  res: Response,
+): Promise<void> => {
+  const { token, code } = req.body;
+  try {
+    const challenge = verifyTwoFactorChallenge(token);
+    if (!challenge) {
+      res.status(401).json({ error: 'Sign-in session expired. Please sign in again.' });
+      return;
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: challenge.userId },
+      include: sessionInclude,
+    });
+
+    // The challenge is only as fresh as the account it was issued for: a
+    // password change or deactivation since then must void it.
+    if (
+      !user?.isActive
+      || !user.twoFactorEnabled
+      || !user.twoFactorSecret
+      || user.tokenVersion !== challenge.tokenVersion
+    ) {
+      res.status(401).json({ error: 'Sign-in session expired. Please sign in again.' });
+      return;
+    }
+
+    const passed = code.includes('-')
+      ? await consumeBackupCode(user.id, code)
+      : verifyTOTPCode(user.twoFactorSecret, code);
+    if (!passed) {
+      res.status(401).json({ error: 'Invalid code' });
+      return;
+    }
 
     await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
     res.json(startSession(res, user));
@@ -131,6 +203,13 @@ export const googleAuth = async (
     }
     if (!user.isActive) {
       res.status(403).json({ error: 'This account has been deactivated' });
+      return;
+    }
+    // 2FA applies here too — Google verifying the password side does not
+    // prove possession of the authenticator, and skipping it would make the
+    // second factor optional for anyone who links a Google account.
+    if (user.twoFactorEnabled) {
+      res.json(startTwoFactorChallenge(user));
       return;
     }
 
@@ -393,6 +472,7 @@ export const me = async (req: AuthedRequest, res: Response): Promise<void> => {
       user: {
         id: user.id, name: user.name, email: user.email,
         role: user.role, memberId: user.memberId,
+        staffPermission: user.staffPermission,
       },
       gym: user.gym,
     });

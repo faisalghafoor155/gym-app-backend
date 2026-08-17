@@ -1,5 +1,7 @@
-import type { Request, Response, RequestHandler } from 'express';
-import type { Role } from '@prisma/client';
+/** @format */
+
+import type { Request, Response, RequestHandler } from "express";
+import type { Role, StaffPermission } from "@prisma/client";
 
 /**
  * The auth middleware attaches the signed-in account to every authenticated
@@ -14,6 +16,8 @@ export interface AuthedRequest<
   gymId: string;
   userId: string;
   role: Role;
+  /** Staff permission level (only set when role is 'staff') */
+  staffPermission?: StaffPermission;
   /** The actor's display name, carried so audit entries can copy it in
    *  without a second lookup on every mutation. */
   actorName: string;
@@ -28,6 +32,12 @@ export interface JwtPayload {
    * middleware rejects the token once the stored version moves past it.
    */
   tokenVersion: number;
+  /**
+   * Set only on tokens that are not sessions — e.g. the short-lived 2FA login
+   * challenge. The auth middleware refuses any token carrying one, so a
+   * challenge can never stand in for a session.
+   */
+  purpose?: string;
 }
 
 /**
@@ -37,8 +47,11 @@ export interface JwtPayload {
  */
 export const authed =
   <P, ResBody, ReqBody, Q>(
-    handler: (req: AuthedRequest<P, ResBody, ReqBody, Q>, res: Response) => unknown,
+    handler: (
+      req: AuthedRequest<P, ResBody, ReqBody, Q>,
+      res: Response,
+    ) => unknown,
   ): RequestHandler =>
-    (req, res) => {
-      void handler(req as unknown as AuthedRequest<P, ResBody, ReqBody, Q>, res);
-    };
+  (req, res) => {
+    void handler(req as unknown as AuthedRequest<P, ResBody, ReqBody, Q>, res);
+  };

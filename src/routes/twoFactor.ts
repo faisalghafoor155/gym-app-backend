@@ -1,0 +1,198 @@
+/** @format */
+
+import { Router, type Request, type Response } from "express";
+import { z } from "zod";
+import { requireAuth } from "../middleware/auth.js";
+import validate from "../middleware/validate.js";
+import type { AuthedRequest } from "../types.js";
+import {
+  generateTwoFactorSecret,
+  enableTwoFactor,
+  disableTwoFactor,
+  saveTempTwoFactorSecret,
+  verifyTOTPCode,
+  getBackupCodeCount,
+} from "../services/twoFactor.js";
+import { verifyTwoFactorLogin } from "../controllers/authController.js";
+import prisma from "../db.js";
+
+const router = Router();
+
+/**
+ * GET /api/auth/two-factor/setup
+ * Generate a new 2FA secret and QR code for setup
+ */
+router.get("/setup", requireAuth, async (req, res: Response) => {
+  const authReq = req as AuthedRequest;
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: authReq.userId },
+      select: { email: true, twoFactorEnabled: true },
+    });
+
+    if (!user) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+
+    if (user.twoFactorEnabled) {
+      res.status(400).json({
+        error: "2FA is already enabled. Disable it first to set up again.",
+      });
+      return;
+    }
+
+    const { secret, qrCode, backupCodes } = await generateTwoFactorSecret(
+      user.email,
+    );
+
+    // Save temporary secret
+    await saveTempTwoFactorSecret(authReq.userId, secret);
+
+    res.json({
+      secret,
+      qrCode,
+      backupCodes,
+    });
+  } catch (error) {
+    console.error("2FA setup error:", error);
+    res.status(500).json({ error: "Failed to generate 2FA setup" });
+  }
+});
+
+/**
+ * POST /api/auth/two-factor/verify-setup
+ * Verify TOTP code and enable 2FA
+ */
+const verifySetupSchema = z.object({
+  code: z.string().regex(/^\d{6}$/, "Code must be 6 digits"),
+  backupCodes: z
+    .array(z.string())
+    .min(1, "At least one backup code is required"),
+});
+
+router.post(
+  "/verify-setup",
+  requireAuth,
+  validate(verifySetupSchema),
+  async (req, res: Response) => {
+    const authReq = req as AuthedRequest<
+      Record<string, string>,
+      unknown,
+      { code: string; backupCodes: string[] }
+    >;
+    try {
+      const { code, backupCodes } = authReq.body;
+
+      const user = await prisma.user.findUnique({
+        where: { id: authReq.userId },
+        select: { twoFactorTempSecret: true, twoFactorTempSecretAt: true },
+      });
+
+      if (!user?.twoFactorTempSecret) {
+        res
+          .status(400)
+          .json({ error: "No 2FA setup in progress. Call /setup first." });
+        return;
+      }
+
+      // Temp secret expires after 15 minutes
+      const tempSecretAge =
+        Date.now() - (user.twoFactorTempSecretAt?.getTime() ?? 0);
+      if (tempSecretAge > 15 * 60 * 1000) {
+        res
+          .status(400)
+          .json({ error: "2FA setup expired. Please start over." });
+        return;
+      }
+
+      // Verify the code
+      if (!verifyTOTPCode(user.twoFactorTempSecret, code)) {
+        res.status(400).json({ error: "Invalid code. Please try again." });
+        return;
+      }
+
+      // Enable 2FA
+      await enableTwoFactor(
+        authReq.userId,
+        user.twoFactorTempSecret,
+        backupCodes,
+      );
+
+      res.json({ success: true, message: "2FA enabled successfully" });
+    } catch (error) {
+      console.error("2FA verification error:", error);
+      res.status(500).json({ error: "Failed to enable 2FA" });
+    }
+  },
+);
+
+/**
+ * POST /api/auth/two-factor/verify-login
+ * The second half of signing in. Public because the caller has no session
+ * yet — what they hold is the challenge token /auth/login (or /auth/google)
+ * issued after the first factor passed. The controller lives with the other
+ * session-issuing code in authController.
+ *
+ * Rate-limited like every credential endpoint (see index.ts): the challenge
+ * proves the password, so guessing codes here must not be free.
+ */
+const verifyLoginSchema = z.object({
+  token: z.string().min(1),
+  // Six digits from the authenticator, or a backup code in its xxxx-xxxx
+  // shape — checked loosely here and decided by shape in the controller.
+  code: z.string().min(1),
+});
+
+router.post(
+  "/verify-login",
+  validate(verifyLoginSchema),
+  (req, res) => verifyTwoFactorLogin(req, res),
+);
+
+/**
+ * GET /api/auth/two-factor/status
+ * What the security settings page needs to render: on or off, and how many
+ * backup codes remain before the user should regenerate them.
+ */
+router.get("/status", requireAuth, async (req, res: Response) => {
+  const authReq = req as AuthedRequest;
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: authReq.userId },
+      select: { twoFactorEnabled: true },
+    });
+
+    if (!user) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+
+    res.json({
+      enabled: user.twoFactorEnabled,
+      remainingBackupCodes: user.twoFactorEnabled
+        ? await getBackupCodeCount(authReq.userId)
+        : 0,
+    });
+  } catch (error) {
+    console.error("2FA status error:", error);
+    res.status(500).json({ error: "Failed to load 2FA status" });
+  }
+});
+
+/**
+ * DELETE /api/auth/two-factor
+ * Disable 2FA for current user
+ */
+router.delete("/", requireAuth, async (req, res: Response) => {
+  const authReq = req as AuthedRequest;
+  try {
+    await disableTwoFactor(authReq.userId);
+    res.json({ success: true, message: "2FA disabled" });
+  } catch (error) {
+    console.error("2FA disable error:", error);
+    res.status(500).json({ error: "Failed to disable 2FA" });
+  }
+});
+
+export default router;

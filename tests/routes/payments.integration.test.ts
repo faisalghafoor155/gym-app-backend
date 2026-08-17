@@ -343,8 +343,17 @@ describe('payments list — paging and totals', () => {
 
     await api().post('/api/payments').set('Cookie', owner.cookie)
       .send({ memberId: member.id, amount: 5000, type: 'membership' });
-    await api().post('/api/payments').set('Cookie', staff.cookie)
-      .send({ memberId: member.id, amount: 700, type: 'membership' });
+    
+    // Insert staff payment directly via DB so we bypass permission check on POST
+    await prisma.payment.create({
+      data: {
+        gymId: owner.gymId,
+        memberId: member.id,
+        amount: 700,
+        type: 'membership',
+        recordedById: staff.userId,
+      },
+    });
 
     const asStaff = await api().get('/api/payments').set('Cookie', staff.cookie);
     const asOwner = await api().get('/api/payments').set('Cookie', owner.cookie);

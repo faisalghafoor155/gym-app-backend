@@ -106,9 +106,9 @@ export const makeGym = async (opts: {
 /** An extra account inside an existing gym. */
 export const addUser = async (
   gymId: string,
-  opts: { role?: 'owner' | 'staff' | 'member'; memberId?: string; email?: string } = {},
+  opts: { role?: 'owner' | 'staff' | 'member'; memberId?: string; email?: string; staffPermission?: string } = {},
 ): Promise<TestAccount> => {
-  const { role = 'staff', memberId, email = `${role}-${crypto.randomUUID()}@example.com` } = opts;
+  const { role = 'staff', memberId, email = `${role}-${crypto.randomUUID()}@example.com`, staffPermission } = opts;
   const user = await prisma.user.create({
     data: {
       gymId,
@@ -117,6 +117,7 @@ export const addUser = async (
       passwordHash: await bcrypt.hash('correct-horse-battery', 4),
       role,
       ...(memberId && { memberId }),
+      ...(role === 'staff' && staffPermission && { staffPermission }),
     },
   });
   return { userId: user.id, gymId, email, cookie: cookieFor(user.id) };

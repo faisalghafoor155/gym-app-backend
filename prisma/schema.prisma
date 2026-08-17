@@ -13,6 +13,20 @@ enum Role {
   member
 }
 
+/// Staff permission levels for fine-grained access control
+enum StaffPermission {
+  /// Full access to every feature, including staff management
+  manager
+  /// Can manage members and memberships
+  members_manager
+  /// Can record payments and view payment reports
+  accountant
+  /// Can check in members and view attendance
+  receptionist
+  /// Can manage supplements and inventory
+  inventory_manager
+}
+
 /// What a payment was for. Kept alongside the optional `membershipId` rather
 /// than derived from it: a membership payment always names its membership, but
 /// a supplement sale or a registration fee has nothing to point at, and
@@ -98,6 +112,22 @@ model User {
   /// rejected instead of living out its 30 days.
   tokenVersion Int @default(0)
 
+  /// Two-Factor Authentication (TOTP)
+  /// Secret key for generating TOTP codes. Null means 2FA is not enabled.
+  twoFactorSecret String?
+  /// Whether 2FA is verified and active.
+  twoFactorEnabled Boolean @default(false)
+  /// Backup codes for 2FA recovery (JSON array of hashed codes).
+  twoFactorBackupCodes String?
+  /// Temporary secret while user is setting up 2FA (not yet confirmed).
+  twoFactorTempSecret String?
+  twoFactorTempSecretAt DateTime?
+
+  /// Staff permission level (only applicable when role = 'staff'). Null on
+  /// purpose: a new staff account gets no extra grants until the owner picks
+  /// a level — a default here would silently hand every hire that access.
+  staffPermission StaffPermission?
+
   lastLoginAt DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
@@ -124,7 +154,12 @@ model Member {
   name  String
   email String?
   phone String?
+  /// Legacy: base64-encoded photo (deprecated, prefer photoUrl)
   photo String?
+  /// S3 key for the stored photo
+  photoKey String?
+  /// Public URL of the photo on S3/CDN
+  photoUrl String?
 
   gender           String?
   dateOfBirth      DateTime?
@@ -144,6 +179,7 @@ model Member {
 
   @@unique([gymId, memberNo])
   @@index([gymId])
+  @@index([photoKey])
 }
 
 /// What a gym sells: a name, a price, and how many days it runs for.

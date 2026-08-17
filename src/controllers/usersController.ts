@@ -14,6 +14,7 @@ import type {
 const publicFields = {
   id: true, name: true, email: true, role: true,
   isActive: true, memberId: true, lastLoginAt: true, createdAt: true,
+  staffPermission: true,
 } as const;
 
 /**
@@ -110,7 +111,7 @@ export const createStaff = async (
   req: AuthedRequest<Record<string, string>, unknown, CreateStaffBody>,
   res: Response,
 ): Promise<void> => {
-  const { name, email, password } = req.body;
+  const { name, email, password, staffPermission } = req.body;
   try {
     if (await prisma.user.findUnique({ where: { email } })) {
       res.status(409).json({ error: 'Email already registered' });
@@ -132,6 +133,7 @@ export const createStaff = async (
           // until the invite is accepted.
           passwordHash,
           role: 'staff',
+          staffPermission: staffPermission || 'receptionist',
         },
         select: publicFields,
       });
@@ -236,7 +238,7 @@ export const update = async (
   res: Response,
 ): Promise<void> => {
   const { id } = req.params;
-  const { name, isActive, role } = req.body;
+  const { name, isActive, role, staffPermission } = req.body;
   try {
     const target = await prisma.user.findFirst({ where: { id, gymId: req.gymId } });
     if (!target) {
@@ -286,6 +288,15 @@ export const update = async (
     // so it is counted and applied in one transaction for the same reason.
     const promoting = role === 'staff' && target.role !== 'staff';
 
+    // If the role is changed to member, clear staff permissions.
+    // If promoting to staff and no permission is specified, default to receptionist.
+    let updatedStaffPermission = staffPermission !== undefined ? staffPermission : undefined;
+    if (role === 'member') {
+      updatedStaffPermission = null;
+    } else if (promoting && !staffPermission) {
+      updatedStaffPermission = 'receptionist';
+    }
+
     const user = await prisma.$transaction(async tx => {
       if (promoting) await claimStaffSeat(tx, req.gymId);
       return tx.user.update({
@@ -294,13 +305,14 @@ export const update = async (
           ...(name && { name }),
           ...(isActive !== undefined && { isActive }),
           ...(role && { role }),
+          ...(updatedStaffPermission !== undefined && { staffPermission: updatedStaffPermission }),
           ...(revoke && { tokenVersion: { increment: 1 } }),
         },
         select: publicFields,
       });
     });
 
-    const changed = diff(target, user, ['name', 'isActive', 'role'] as const);
+    const changed = diff(target, user, ['name', 'isActive', 'role', 'staffPermission'] as const);
     if (changed) {
       await audit(req, {
         action: 'staff.update',

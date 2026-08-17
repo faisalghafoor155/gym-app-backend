@@ -89,6 +89,10 @@ describe('owner-only routes', () => {
 describe('staff routes', () => {
   it('lets staff manage members', async () => {
     const { staff } = await gymWithRoles();
+    await prisma.user.update({
+      where: { id: staff.userId },
+      data: { staffPermission: 'members_manager' },
+    });
 
     const res = await api().post('/api/members')
       .set('Cookie', staff.cookie)
