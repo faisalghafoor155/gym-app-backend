@@ -67,19 +67,19 @@ const LAST = [
  */
 const COHORTS = [
   // Comfortably active — expiry well in the future.
-  { kind: 'active', count: 20, startedDaysAgo: () => between(3, 20) },
+  { kind: 'active', count: 42, startedDaysAgo: () => between(3, 20) },
   // Inside the 7-day warning window the app derives on read. On the 30-day
   // plan, starting 24-29 days ago puts the expiry 1-6 days out.
-  { kind: 'expiring', count: 10, startedDaysAgo: () => between(24, 29) },
+  { kind: 'expiring', count: 18, startedDaysAgo: () => between(24, 29) },
   // Expired recently: the renewal call list.
-  { kind: 'expired', count: 8, startedDaysAgo: () => between(33, 50) },
+  { kind: 'expired', count: 16, startedDaysAgo: () => between(33, 50) },
   // Expired long enough that the app treats them as off the roster (60+ days).
-  { kind: 'lapsed', count: 6, startedDaysAgo: () => between(95, 140) },
+  { kind: 'lapsed', count: 11, startedDaysAgo: () => between(95, 140) },
   // Registered but never sold anything — the "No membership" tab.
-  { kind: 'none', count: 3, startedDaysAgo: () => 0 },
+  { kind: 'none', count: 7, startedDaysAgo: () => 0 },
   // Bought, then called it off. Should never read as active anywhere.
-  { kind: 'cancelled', count: 3, startedDaysAgo: () => between(10, 40) },
-] as const;
+  { kind: 'cancelled', count: 6, startedDaysAgo: () => between(10, 40) },
+] as const; // 100 members in total
 
 const SUPPLEMENTS = [
   { name: 'Whey Protein 2lb', category: 'protein', price: 8500, stock: 14, dosage: '1 scoop', timing: 'Post-workout' },
@@ -103,6 +103,44 @@ const DIET_PLANS = [
   { name: 'Cutting - 1800 kcal', description: 'High protein, moderate carbs, 40/30/30 split.' },
   { name: 'Bulking - 3200 kcal', description: 'Calorie surplus with 6 meals a day.' },
   { name: 'Maintenance - 2400 kcal', description: 'Balanced macros for holding bodyweight.' },
+] as const;
+
+/**
+ * Trainers, priced deliberately unlike each other so the fee resolution has
+ * something to show: one charges above the gym rate, one below, one is free,
+ * and one leaves `ptFee` null so the gym default applies.
+ */
+const TRAINERS = [
+  { name: 'Coach Bilal Ahmed', phone: '03001234501', specialization: 'Strength & Conditioning', commissionPercentage: 15, ptFee: 12000 },
+  { name: 'Coach Sara Khan', phone: '03001234502', specialization: 'Weight Loss', commissionPercentage: 12, ptFee: 8000 },
+  { name: 'Coach Usman Tariq', phone: '03001234503', specialization: 'Bodybuilding', commissionPercentage: 20, ptFee: null },
+  { name: 'Coach Hina Malik', phone: '03001234504', specialization: 'Yoga & Mobility', commissionPercentage: 10, ptFee: 0 },
+  { name: 'Coach Faizan Ali', phone: '03001234505', specialization: 'CrossFit', commissionPercentage: 18, ptFee: null },
+] as const;
+
+// Length lives on the schedule's start/end times, not on the class, so it is
+// not a field here.
+const CLASSES = [
+  { name: 'Morning HIIT', description: 'Thirty minutes of high-intensity intervals.' },
+  { name: 'Evening Yoga', description: 'Mobility and breathing, all levels welcome.' },
+  { name: 'Spin Class', description: 'Indoor cycling to music.' },
+  { name: 'Boxing Basics', description: 'Footwork, bag work and pad drills.' },
+] as const;
+
+/**
+ * A month of running costs. Dated across the last three months so the profit
+ * report has more than one period to compare, and spread over categories so
+ * the breakdown is not one bar.
+ */
+const EXPENSES = [
+  { category: 'rent', amount: 85000, vendor: 'Property Owner', notes: 'Monthly hall rent', monthly: true },
+  { category: 'utilities', amount: 24000, vendor: 'K-Electric', notes: 'Electricity', monthly: true },
+  { category: 'utilities', amount: 3500, vendor: 'SSGC', notes: 'Gas', monthly: true },
+  { category: 'salaries', amount: 120000, vendor: null, notes: 'Floor staff salaries', monthly: true },
+  { category: 'maintenance', amount: 8000, vendor: 'FitFix Services', notes: 'Treadmill belt replacement', monthly: false },
+  { category: 'equipment', amount: 65000, vendor: 'Gym Tech Pk', notes: 'Two adjustable benches', monthly: false },
+  { category: 'marketing', amount: 15000, vendor: 'Meta Ads', notes: 'Ramzan promotion', monthly: false },
+  { category: 'supplies', amount: 4200, vendor: 'Metro Cash & Carry', notes: 'Cleaning supplies and towels', monthly: false },
 ] as const;
 
 async function main(): Promise<void> {
@@ -210,10 +248,87 @@ async function main(): Promise<void> {
   }
   const supplements = await prisma.supplement.findMany({ where: { gymId: gym.id } });
 
+  // --- gym pricing ------------------------------------------------------
+  // The trainer fee falls back to this whenever a trainer sets no rate of its
+  // own, so a seeded gym should have a real one rather than the honest 0 a
+  // fresh gym starts with.
+  if (gym.defaultPtFee.equals(0)) {
+    await prisma.gym.update({ where: { id: gym.id }, data: { defaultPtFee: 10000 } });
+  }
+  const gymDefaultPtFee = gym.defaultPtFee.equals(0) ? 10000 : gym.defaultPtFee.toNumber();
+
+  // --- trainers ---------------------------------------------------------
+  for (const t of TRAINERS) {
+    const exists = await prisma.trainer.findFirst({ where: { gymId: gym.id, name: t.name } });
+    if (!exists) await prisma.trainer.create({ data: { ...t, gymId: gym.id } });
+  }
+  const trainers = await prisma.trainer.findMany({ where: { gymId: gym.id, isActive: true } });
+
+  // --- classes and their weekly schedules -------------------------------
+  for (const c of CLASSES) {
+    const exists = await prisma.class.findFirst({ where: { gymId: gym.id, name: c.name } });
+    if (!exists) await prisma.class.create({ data: { ...c, gymId: gym.id } });
+  }
+  const classes = await prisma.class.findMany({ where: { gymId: gym.id } });
+
+  for (const cls of classes) {
+    const already = await prisma.classSchedule.count({ where: { classId: cls.id } });
+    if (already > 0) continue;
+    // Two slots a week each, on days that do not all collide, so the weekly
+    // grid has something in most columns.
+    for (const dayOffset of [0, 3]) {
+      const day = (classes.indexOf(cls) + dayOffset) % 7;
+      const morning = cls.name.includes('Morning') || cls.name.includes('Spin');
+      const startHour = morning ? 7 : 18;
+      await prisma.classSchedule.create({
+        data: {
+          gymId: gym.id,
+          classId: cls.id,
+          trainerId: pick(trainers).id,
+          dayOfWeek: day,
+          startTime: `${String(startHour).padStart(2, '0')}:00`,
+          endTime: `${String(startHour + 1).padStart(2, '0')}:00`,
+          capacity: between(10, 25),
+        },
+      });
+    }
+  }
+  const schedules = await prisma.classSchedule.findMany({ where: { gymId: gym.id } });
+
+  // --- expenses ---------------------------------------------------------
+  // Three months of them, so the profit report has periods to compare rather
+  // than a single bar.
+  let expensesAdded = 0;
+  if ((await prisma.expense.count({ where: { gymId: gym.id } })) === 0) {
+    for (let monthsBack = 0; monthsBack < 3; monthsBack++) {
+      for (const e of EXPENSES) {
+        // The one-off costs land in a single month; the running ones recur.
+        if (!e.monthly && monthsBack !== between(0, 2)) continue;
+        const spentOn = daysAgo(monthsBack * 30 + between(1, 25));
+        await prisma.expense.create({
+          data: {
+            gymId: gym.id,
+            category: e.category,
+            // Utilities and salaries wobble month to month; rent does not.
+            amount: e.category === 'rent' ? e.amount : Math.round(e.amount * (0.9 + rand() * 0.2)),
+            spentOn,
+            vendor: e.vendor,
+            notes: e.notes,
+          },
+        });
+        expensesAdded++;
+      }
+    }
+  }
+
   // --- members, memberships, payments, attendance -----------------------
   let created = 0;
   let paymentsMade = 0;
   let checkins = 0;
+  let ptSessionsMade = 0;
+  let bookingsMade = 0;
+  let salesMade = 0;
+  let withTrainer = 0;
 
   for (const cohort of COHORTS) {
     for (let i = 0; i < cohort.count; i++) {
@@ -226,6 +341,13 @@ async function main(): Promise<void> {
       });
       const memberNo = `MEM-${String(memberSeq).padStart(5, '0')}`;
       const name = `${pick(FIRST)} ${pick(LAST)}`;
+
+      // About a third train with somebody. Lapsed members are left without —
+      // they stopped coming, so a live trainer assignment would be odd.
+      const trainer =
+        cohort.kind !== 'lapsed' && cohort.kind !== 'none' && rand() > 0.65
+          ? pick(trainers)
+          : null;
 
       const member = await prisma.member.create({
         data: {
@@ -244,9 +366,63 @@ async function main(): Promise<void> {
           // stored status stays 'active' so nothing is hard-coded inactive.
           status: 'active',
           createdAt: daysAgo(cohort.startedDaysAgo() + between(0, 5)),
+          trainerId: trainer?.id ?? null,
         },
       });
       created++;
+
+      // The one-off assignment fee, resolved the way the app resolves it:
+      // the trainer's own rate, else the gym's. A rate of zero raises no
+      // charge at all rather than a zero-rupee debt.
+      if (trainer) {
+        withTrainer++;
+        const feeRate = trainer.ptFee === null ? gymDefaultPtFee : trainer.ptFee.toNumber();
+        // A third of them haggled, so the "(agreed rate)" note has examples.
+        const negotiated = rand() > 0.66 && feeRate > 0;
+        const fee = negotiated ? Math.round((feeRate * (0.6 + rand() * 0.25)) / 500) * 500 : feeRate;
+        if (fee > 0) {
+          await prisma.payment.create({
+            data: {
+              gymId: gym.id,
+              memberId: member.id,
+              type: 'other',
+              amount: fee,
+              method: 'cash',
+              // Most are collected at the counter; a few are left owing so the
+              // outstanding column is not empty.
+              status: rand() > 0.25 ? 'paid' : 'due',
+              paymentDate: daysAgo(cohort.startedDaysAgo()),
+              notes:
+                `Trainer Fee (PT) for instructor: ${trainer.name}` +
+                (negotiated ? ' (agreed rate)' : ''),
+            },
+          });
+          paymentsMade++;
+        }
+
+        // Sessions actually delivered, with the trainer's commission worked
+        // out the same way the app does — otherwise the commission report
+        // would show sessions but no earnings.
+        for (let s = 0; s < between(2, 10); s++) {
+          const price = between(3, 8) * 500;
+          const commission = Math.round((price * trainer.commissionPercentage.toNumber()) / 100);
+          const when = daysAgo(between(0, 45));
+          when.setHours(between(7, 20), 0, 0, 0);
+          await prisma.ptSession.create({
+            data: {
+              gymId: gym.id,
+              memberId: member.id,
+              trainerId: trainer.id,
+              sessionDate: when,
+              priceCharged: price,
+              trainerCommission: commission,
+              status: when > new Date() ? 'scheduled' : pick(['completed', 'completed', 'cancelled']),
+              paymentStatus: rand() > 0.3 ? 'paid' : 'unpaid',
+            },
+          });
+          ptSessionsMade++;
+        }
+      }
 
       if (cohort.kind === 'none') continue;
 
@@ -344,35 +520,102 @@ async function main(): Promise<void> {
         });
       }
 
-      // Seed some supplement sales
-      if (rand() > 0.6 && supplements.length) {
+      // Supplement sales.
+      //
+      // A SupplementSale row as well as the payment, not just the payment:
+      // the sales report and the stock ledger read the sale, so a payment on
+      // its own would leave the Supplement Sales page empty while the money
+      // showed up in revenue — books that disagree with each other.
+      if (rand() > 0.55 && supplements.length) {
         const item = pick(supplements);
-        if (item.stock > 0) {
-          await prisma.payment.create({
+        const qty = rand() > 0.8 ? 2 : 1;
+        if (item.stock >= qty && item.price) {
+          const unitPrice = item.price;
+          const total = unitPrice.mul(qty);
+          const soldOn = daysAgo(between(1, 40));
+
+          const payment = await prisma.payment.create({
             data: {
               gymId: gym.id,
               memberId: member.id,
               type: 'supplement',
-              amount: item.price,
+              amount: total,
               method: rand() > 0.4 ? 'cash' : 'online',
               status: 'paid',
-              paymentDate: daysAgo(between(1, 20)),
-              notes: `Purchased ${item.name}`,
+              paymentDate: soldOn,
+              notes: `Purchased ${item.name}${qty > 1 ? ` x${qty}` : ''}`,
             },
           });
-          // Decrement stock
+          await prisma.supplementSale.create({
+            data: {
+              gymId: gym.id,
+              supplementId: item.id,
+              memberId: member.id,
+              quantity: qty,
+              // Snapshotted, so a later price change does not rewrite what
+              // this member was charged.
+              unitPrice,
+              total,
+              paymentId: payment.id,
+              soldAt: soldOn,
+            },
+          });
           await prisma.supplement.update({
             where: { id: item.id },
-            data: { stock: { decrement: 1 } },
+            data: { stock: { decrement: qty } },
           });
+          // The in-memory copy has to move too, or a later member in this loop
+          // reads a stock level the database no longer has and oversells it.
+          item.stock -= qty;
           paymentsMade++;
+          salesMade++;
+        }
+      }
+
+      // Class bookings for members who are actually still coming.
+      if (schedules.length && (cohort.kind === 'active' || cohort.kind === 'expiring') && rand() > 0.5) {
+        const booked = new Set<string>();
+        for (let b = 0; b < between(1, 3); b++) {
+          const schedule = pick(schedules);
+          const bookingDate = daysAgo(between(0, 14));
+          bookingDate.setHours(0, 0, 0, 0);
+          // One booking per member per schedule per day is a database
+          // constraint, so a repeat pick has to be skipped rather than retried
+          // into a crash.
+          const key = `${schedule.id}:${bookingDate.toISOString()}`;
+          if (booked.has(key)) continue;
+          booked.add(key);
+          await prisma.classBooking.create({
+            data: {
+              gymId: gym.id,
+              scheduleId: schedule.id,
+              memberId: member.id,
+              bookingDate,
+              status: bookingDate < new Date()
+                ? pick(['attended', 'attended', 'cancelled'])
+                : 'booked',
+            },
+          });
+          bookingsMade++;
         }
       }
     }
   }
 
   console.log(
-    `Done — ${created} members, ${paymentsMade} payments, ${checkins} check-ins, ${supplements.length} supplements, ${workoutPlans.length} workout and ${dietPlans.length} diet plans.`,
+    [
+      `Done — ${created} members (${withTrainer} with a trainer)`,
+      `${paymentsMade} payments`,
+      `${checkins} check-ins`,
+      `${salesMade} supplement sales`,
+      `${ptSessionsMade} PT sessions`,
+      `${bookingsMade} class bookings`,
+      `${expensesAdded} expenses`,
+      `${trainers.length} trainers`,
+      `${classes.length} classes on ${schedules.length} weekly slots`,
+      `${supplements.length} supplements`,
+      `${workoutPlans.length} workout and ${dietPlans.length} diet plans`,
+    ].join(', ') + '.',
   );
 }
 
