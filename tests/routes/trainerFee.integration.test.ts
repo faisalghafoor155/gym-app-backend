@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import prisma from '../../src/db.js';
-import { addMember, addUser, api, makeGym, resetDb } from '../helpers.js';
+import { addMember, addPlan, addUser, api, makeGym, resetDb } from '../helpers.js';
 
 /**
  * The personal-trainer fee used to be the literal `10000` written twice in the
@@ -114,6 +114,168 @@ describe('Trainer fee — on registration', () => {
     // trainer name.
     const charge = await feeCharge(res.body.id ?? '');
     expect(charge).toBeNull();
+  });
+});
+
+describe('Trainer fee — negotiated at the desk', () => {
+  it('charges what the front desk typed, over both defaults', async () => {
+    const owner = await makeGym();
+    await setFee(owner.gymId, 10000);
+    const trainer = await addTrainer(owner.gymId, { ptFee: 12000 });
+
+    // The price list says 12,000; the member argued it down to 8,000.
+    const res = await api()
+      .post('/api/members')
+      .set('Cookie', owner.cookie)
+      .send({ name: 'Ali Khan', phone: '03001234567', trainerId: trainer.id, ptFee: 8000 });
+
+    expect(res.status).toBe(201);
+    const charge = await feeCharge(res.body.id);
+    expect(charge?.amount.toNumber()).toBe(8000);
+    // The row says the price was agreed, so nobody has to wonder later why it
+    // differs from the rate.
+    expect(charge?.notes).toContain('agreed rate');
+  });
+
+  it('falls back to the defaults when the field is left blank', async () => {
+    const owner = await makeGym();
+    await setFee(owner.gymId, 10000);
+    const trainer = await addTrainer(owner.gymId);
+
+    for (const body of [
+      { name: 'A', phone: '03001111111', trainerId: trainer.id },
+      { name: 'B', phone: '03002222222', trainerId: trainer.id, ptFee: '' },
+      { name: 'C', phone: '03003333333', trainerId: trainer.id, ptFee: null },
+    ]) {
+      const res = await api().post('/api/members').set('Cookie', owner.cookie).send(body);
+      expect((await feeCharge(res.body.id))?.amount.toNumber(), body.name).toBe(10000);
+    }
+  });
+
+  it('treats a typed 0 as a decision to charge nothing', async () => {
+    const owner = await makeGym();
+    await setFee(owner.gymId, 10000);
+    const trainer = await addTrainer(owner.gymId);
+
+    const res = await api()
+      .post('/api/members')
+      .set('Cookie', owner.cookie)
+      .send({ name: 'Ali Khan', phone: '03001234567', trainerId: trainer.id, ptFee: 0 });
+
+    // Free, not "fall back to 10,000".
+    expect(await feeCharge(res.body.id)).toBeNull();
+  });
+
+  it('does not mark a typed amount as agreed when it equals the rate', async () => {
+    const owner = await makeGym();
+    await setFee(owner.gymId, 10000);
+    const trainer = await addTrainer(owner.gymId);
+
+    const res = await api()
+      .post('/api/members')
+      .set('Cookie', owner.cookie)
+      .send({ name: 'Ali Khan', phone: '03001234567', trainerId: trainer.id, ptFee: 10000 });
+
+    expect((await feeCharge(res.body.id))?.notes).not.toContain('agreed rate');
+  });
+
+  it('adds up: a 2500 plan and an 8000 trainer fee leave 10500 owed', async () => {
+    const owner = await makeGym();
+    await setFee(owner.gymId, 10000);
+    const plan = await addPlan(owner.gymId, { price: 2500, durationDays: 30 });
+    const trainer = await addTrainer(owner.gymId);
+
+    const res = await api()
+      .post('/api/members')
+      .set('Cookie', owner.cookie)
+      .send({
+        name: 'Ali Khan',
+        phone: '03001234567',
+        planId: plan.id,
+        trainerId: trainer.id,
+        ptFee: 8000,
+      });
+
+    expect(res.status).toBe(201);
+    const membership = await prisma.membership.findFirstOrThrow({
+      where: { memberId: res.body.id },
+    });
+    expect(membership.pricePaid.toNumber()).toBe(2500);
+    expect((await feeCharge(res.body.id))?.amount.toNumber()).toBe(8000);
+  });
+
+  it('ignores a fee sent without a trainer rather than rejecting it', async () => {
+    const owner = await makeGym();
+    // A form that keeps the field around while the trainer picker is empty is
+    // not making an error worth a 400.
+    const res = await api()
+      .post('/api/members')
+      .set('Cookie', owner.cookie)
+      .send({ name: 'Ali Khan', phone: '03001234567', ptFee: 8000 });
+
+    expect(res.status).toBe(201);
+    expect(await feeCharge(res.body.id)).toBeNull();
+  });
+
+  it('refuses a negative fee', async () => {
+    const owner = await makeGym();
+    const trainer = await addTrainer(owner.gymId);
+    const res = await api()
+      .post('/api/members')
+      .set('Cookie', owner.cookie)
+      .send({ name: 'Ali Khan', phone: '03001234567', trainerId: trainer.id, ptFee: -500 });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('takes a negotiated fee when a trainer is hired later, from the edit form', async () => {
+    const owner = await makeGym();
+    await setFee(owner.gymId, 10000);
+    const member = await addMember(owner.gymId);
+    const trainer = await addTrainer(owner.gymId);
+
+    const res = await api()
+      .put(`/api/members/${member.id}`)
+      .set('Cookie', owner.cookie)
+      .send({ trainerId: trainer.id, ptFee: 7500 });
+
+    expect(res.status).toBe(200);
+    expect((await feeCharge(member.id))?.amount.toNumber()).toBe(7500);
+  });
+
+  it('takes a fresh negotiated fee when the member switches trainers', async () => {
+    const owner = await makeGym();
+    await setFee(owner.gymId, 10000);
+    const member = await addMember(owner.gymId);
+    const first = await addTrainer(owner.gymId, { name: 'Coach One' });
+    const second = await addTrainer(owner.gymId, { name: 'Coach Two' });
+
+    await api()
+      .put(`/api/members/${member.id}`)
+      .set('Cookie', owner.cookie)
+      .send({ trainerId: first.id, ptFee: 6000 });
+    await api()
+      .put(`/api/members/${member.id}`)
+      .set('Cookie', owner.cookie)
+      .send({ trainerId: second.id, ptFee: 9000 });
+
+    const charges = await prisma.payment.findMany({
+      where: { memberId: member.id, type: 'other' },
+      orderBy: { paymentDate: 'asc' },
+    });
+    expect(charges.map(c => c.amount.toNumber())).toEqual([6000, 9000]);
+  });
+
+  it('does not store the fee on the member row', async () => {
+    const owner = await makeGym();
+    const trainer = await addTrainer(owner.gymId);
+    const res = await api()
+      .post('/api/members')
+      .set('Cookie', owner.cookie)
+      .send({ name: 'Ali Khan', phone: '03001234567', trainerId: trainer.id, ptFee: 8000 });
+
+    // It prices one charge; it is not a property of the member.
+    expect(res.body.ptFee).toBeUndefined();
   });
 });
 

@@ -15,7 +15,18 @@ import { Prisma } from '@prisma/client';
 export const resolvePtFee = (
   trainer: { ptFee: Prisma.Decimal | null },
   gym: { defaultPtFee: Prisma.Decimal },
-): Prisma.Decimal => trainer.ptFee ?? gym.defaultPtFee;
+  /**
+   * What the front desk actually agreed with the member, if anything.
+   *
+   * Wins over both defaults, because personal training is negotiated: the
+   * price list says 10,000, the member argues it down to 8,000, and the figure
+   * that has to reach the books is the one they shook hands on. Null or
+   * undefined falls through to the defaults, so the common case still needs no
+   * typing — and an explicit 0 is a real decision to charge nothing.
+   */
+  override?: number | null,
+): Prisma.Decimal =>
+  override == null ? trainer.ptFee ?? gym.defaultPtFee : new Prisma.Decimal(override);
 
 /** The `select` both callers need to resolve a fee. */
 export const trainerFeeSelect = { id: true, name: true, ptFee: true } as const;
@@ -34,9 +45,15 @@ export const buildPtFeeCharge = (
   memberId: string,
   trainer: { name: string; ptFee: Prisma.Decimal | null },
   gym: { defaultPtFee: Prisma.Decimal },
+  override?: number | null,
 ): Prisma.PaymentUncheckedCreateInput | null => {
-  const amount = resolvePtFee(trainer, gym);
+  const amount = resolvePtFee(trainer, gym, override);
   if (amount.lessThanOrEqualTo(0)) return null;
+
+  // A negotiated price is worth saying so on the receipt: six months later,
+  // "why did this member pay 8,000 when the rate is 10,000?" is a question
+  // somebody will ask, and the answer should be on the row itself.
+  const negotiated = override != null && !amount.equals(trainer.ptFee ?? gym.defaultPtFee);
 
   return {
     gymId,
@@ -45,6 +62,8 @@ export const buildPtFeeCharge = (
     status: 'due',
     method: 'cash',
     type: 'other',
-    notes: `Trainer Fee (PT) for instructor: ${trainer.name}`,
+    notes:
+      `Trainer Fee (PT) for instructor: ${trainer.name}` +
+      (negotiated ? ' (agreed rate)' : ''),
   };
 };

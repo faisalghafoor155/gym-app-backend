@@ -260,7 +260,9 @@ export const create = async (
   req: AuthedRequest<Record<string, string>, unknown, CreateMemberBody>,
   res: Response,
 ): Promise<void> => {
-  const { planId, startDate, photo, ...fields } = req.body;
+  // `ptFee` is pulled out with the rest: it prices the trainer assignment and
+  // is not a column on the member, so it must not reach the create below.
+  const { planId, startDate, photo, ptFee, ...fields } = req.body;
   try {
     if (planId) {
       const plan = await prisma.membershipPlan.findFirst({
@@ -346,9 +348,13 @@ export const create = async (
           select: trainerFeeSelect,
         });
         if (trainer) {
-          const charge = buildPtFeeCharge(req.gymId, created.id, trainer, {
-            defaultPtFee: gym.defaultPtFee,
-          });
+          const charge = buildPtFeeCharge(
+            req.gymId,
+            created.id,
+            trainer,
+            { defaultPtFee: gym.defaultPtFee },
+            ptFee,
+          );
           if (charge) await tx.payment.create({ data: charge });
         }
       }
@@ -405,6 +411,7 @@ export const update = async (
     address,
     emergencyContact,
     trainerId,
+    ptFee,
   } = req.body;
   try {
     const existing = await prisma.member.findFirst({
@@ -470,7 +477,7 @@ export const update = async (
           }),
         ]);
         if (trainer) {
-          const charge = buildPtFeeCharge(req.gymId, id, trainer, gym);
+          const charge = buildPtFeeCharge(req.gymId, id, trainer, gym, ptFee);
           if (charge) await tx.payment.create({ data: charge });
         }
       }

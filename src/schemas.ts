@@ -190,6 +190,27 @@ const memberBase = {
   address: optionalText(500),
   emergencyContact: optionalText(100),
   trainerId: uuid.or(z.literal("").transform(() => null)).nullish(),
+  /**
+   * What the front desk agreed for the trainer assignment, when it was
+   * haggled rather than taken from the price list.
+   *
+   * Null or absent means "use the trainer's rate, then the gym's" — the
+   * common case, which should need no typing. An explicit 0 charges nothing.
+   * Only read when a trainer is actually being assigned; sent without one it
+   * is ignored rather than rejected, since a form that keeps the field around
+   * while the trainer picker is empty is not making an error.
+   *
+   * The empty-string branch comes FIRST deliberately. `money` is
+   * `z.coerce.number()`, and coercion turns `""` into `0` — so with the
+   * branches the other way round a blank field would silently mean "charge
+   * nothing" instead of "use the default", and the gym's price would never
+   * apply.
+   */
+  ptFee: z
+    .literal("")
+    .transform(() => null)
+    .or(money)
+    .nullish(),
 };
 
 // Membership details are no longer part of a member. A member can be created
