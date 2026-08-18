@@ -12,7 +12,8 @@
     "test:watch": "vitest",
     "db:migrate": "npx prisma migrate dev",
     "db:generate": "npx prisma generate",
-    "db:seed": "tsx prisma/seed.ts"
+    "db:seed": "tsx prisma/seed.ts",
+    "gen:permissions": "tsx scripts/generatePermissions.ts"
   },
   "keywords": [],
   "author": "",

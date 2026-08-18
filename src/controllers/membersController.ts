@@ -20,6 +20,7 @@ import {
   base64ToBuffer,
   extractFilename,
 } from "../services/s3.js";
+import { buildPtFeeCharge, trainerFeeSelect } from "../services/trainerFee.js";
 import type { AuthedRequest } from "../types.js";
 import type {
   CreateMemberBody,
@@ -304,7 +305,7 @@ export const create = async (
       const gym = await tx.gym.update({
         where: { id: req.gymId },
         data: { memberSeq: { increment: 1 } },
-        select: { memberSeq: true },
+        select: { memberSeq: true, defaultPtFee: true },
       });
 
       const created = await tx.member.create({
@@ -338,21 +339,17 @@ export const create = async (
       }
 
       if (fields.trainerId) {
-        const trainer = await tx.trainer.findUnique({
-          where: { id: fields.trainerId },
+        const trainer = await tx.trainer.findFirst({
+          // Scoped by gym: a trainer id from elsewhere must not resolve here
+          // and put another gym's name on this member's bill.
+          where: { id: fields.trainerId, gymId: req.gymId },
+          select: trainerFeeSelect,
         });
         if (trainer) {
-          await tx.payment.create({
-            data: {
-              gymId: req.gymId,
-              memberId: created.id,
-              amount: new Prisma.Decimal(10000),
-              status: 'due',
-              method: 'cash',
-              type: 'other',
-              notes: `Trainer Fee (PT) for instructor: ${trainer.name}`,
-            },
+          const charge = buildPtFeeCharge(req.gymId, created.id, trainer, {
+            defaultPtFee: gym.defaultPtFee,
           });
+          if (charge) await tx.payment.create({ data: charge });
         }
       }
 
@@ -458,23 +455,23 @@ export const update = async (
     }
 
     await prisma.$transaction(async (tx) => {
-      // If trainerId is changing from none to a specific trainer, charge the fee
+      // Charged when the member moves onto a trainer they were not already
+      // with — including a switch between trainers, since that is a new
+      // engagement with a fee of its own.
       if (trainerId && trainerId !== existing.trainerId) {
-        const trainer = await tx.trainer.findUnique({
-          where: { id: trainerId },
-        });
+        const [trainer, gym] = await Promise.all([
+          tx.trainer.findFirst({
+            where: { id: trainerId, gymId: req.gymId },
+            select: trainerFeeSelect,
+          }),
+          tx.gym.findUniqueOrThrow({
+            where: { id: req.gymId },
+            select: { defaultPtFee: true },
+          }),
+        ]);
         if (trainer) {
-          await tx.payment.create({
-            data: {
-              gymId: req.gymId,
-              memberId: id,
-              amount: new Prisma.Decimal(10000),
-              status: 'due',
-              method: 'cash',
-              type: 'other',
-              notes: `Trainer Fee (PT) for instructor: ${trainer.name}`,
-            },
-          });
+          const charge = buildPtFeeCharge(req.gymId, id, trainer, gym);
+          if (charge) await tx.payment.create({ data: charge });
         }
       }
 

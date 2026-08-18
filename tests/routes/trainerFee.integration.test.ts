@@ -1,0 +1,298 @@
+import { beforeEach, describe, expect, it } from 'vitest';
+import prisma from '../../src/db.js';
+import { addMember, addUser, api, makeGym, resetDb } from '../helpers.js';
+
+/**
+ * The personal-trainer fee used to be the literal `10000` written twice in the
+ * member controller, so every gym charged the same price and none could change
+ * it. These cases pin the replacement: a gym default, a per-trainer override,
+ * and zero meaning "no charge" rather than "fall back to something".
+ */
+
+beforeEach(resetDb);
+
+const addTrainer = (gymId: string, opts: { name?: string; ptFee?: number | null } = {}) =>
+  prisma.trainer.create({
+    data: {
+      gymId,
+      name: opts.name ?? 'Coach Bilal',
+      ptFee: opts.ptFee === undefined ? null : opts.ptFee,
+    },
+    select: { id: true, name: true },
+  });
+
+const setFee = (gymId: string, defaultPtFee: number) =>
+  prisma.gym.update({ where: { id: gymId }, data: { defaultPtFee } });
+
+/** The trainer-fee charge raised for a member, if any. */
+const feeCharge = async (memberId: string) =>
+  prisma.payment.findFirst({ where: { memberId, type: 'other' } });
+
+describe('Trainer fee — on registration', () => {
+  it('charges the gym default when the trainer sets no price', async () => {
+    const owner = await makeGym();
+    await setFee(owner.gymId, 7500);
+    const trainer = await addTrainer(owner.gymId);
+
+    const res = await api()
+      .post('/api/members')
+      .set('Cookie', owner.cookie)
+      .send({ name: 'Ali Khan', phone: '03001234567', trainerId: trainer.id });
+
+    expect(res.status).toBe(201);
+    const charge = await feeCharge(res.body.id);
+    expect(charge?.amount.toNumber()).toBe(7500);
+    expect(charge?.status).toBe('due');
+    expect(charge?.notes).toContain('Coach Bilal');
+  });
+
+  it('prefers the trainer\'s own price over the gym default', async () => {
+    const owner = await makeGym();
+    await setFee(owner.gymId, 7500);
+    const trainer = await addTrainer(owner.gymId, { name: 'Coach Sara', ptFee: 12000 });
+
+    const res = await api()
+      .post('/api/members')
+      .set('Cookie', owner.cookie)
+      .send({ name: 'Ali Khan', phone: '03001234567', trainerId: trainer.id });
+
+    const charge = await feeCharge(res.body.id);
+    expect(charge?.amount.toNumber()).toBe(12000);
+  });
+
+  it('raises no charge at all when the fee resolves to zero', async () => {
+    const owner = await makeGym(); // defaultPtFee starts at 0
+    const trainer = await addTrainer(owner.gymId);
+
+    const res = await api()
+      .post('/api/members')
+      .set('Cookie', owner.cookie)
+      .send({ name: 'Ali Khan', phone: '03001234567', trainerId: trainer.id });
+
+    // A zero-rupee "due" would sit on the member's outstanding list forever
+    // and count as money the gym is owed.
+    expect(await feeCharge(res.body.id)).toBeNull();
+  });
+
+  it('treats a trainer price of zero as free, not as "use the default"', async () => {
+    const owner = await makeGym();
+    await setFee(owner.gymId, 7500);
+    const trainer = await addTrainer(owner.gymId, { ptFee: 0 });
+
+    const res = await api()
+      .post('/api/members')
+      .set('Cookie', owner.cookie)
+      .send({ name: 'Ali Khan', phone: '03001234567', trainerId: trainer.id });
+
+    expect(await feeCharge(res.body.id)).toBeNull();
+  });
+
+  it('raises nothing when no trainer is assigned', async () => {
+    const owner = await makeGym();
+    await setFee(owner.gymId, 7500);
+
+    const res = await api()
+      .post('/api/members')
+      .set('Cookie', owner.cookie)
+      .send({ name: 'Ali Khan', phone: '03001234567' });
+
+    expect(await feeCharge(res.body.id)).toBeNull();
+  });
+
+  it('ignores a trainer belonging to another gym', async () => {
+    const owner = await makeGym();
+    await setFee(owner.gymId, 7500);
+    const other = await makeGym({ gymName: 'Rival Gym' });
+    const theirTrainer = await addTrainer(other.gymId, { name: 'Their Coach' });
+
+    const res = await api()
+      .post('/api/members')
+      .set('Cookie', owner.cookie)
+      .send({ name: 'Ali Khan', phone: '03001234567', trainerId: theirTrainer.id });
+
+    // Whatever the member row ends up saying, no bill may carry another gym's
+    // trainer name.
+    const charge = await feeCharge(res.body.id ?? '');
+    expect(charge).toBeNull();
+  });
+});
+
+describe('Trainer fee — on assignment via edit', () => {
+  it('charges when a member moves onto a trainer', async () => {
+    const owner = await makeGym();
+    await setFee(owner.gymId, 5000);
+    const member = await addMember(owner.gymId);
+    const trainer = await addTrainer(owner.gymId);
+
+    const res = await api()
+      .put(`/api/members/${member.id}`)
+      .set('Cookie', owner.cookie)
+      .send({ trainerId: trainer.id });
+
+    expect(res.status).toBe(200);
+    expect((await feeCharge(member.id))?.amount.toNumber()).toBe(5000);
+  });
+
+  it('charges again when the member switches to a different trainer', async () => {
+    const owner = await makeGym();
+    await setFee(owner.gymId, 5000);
+    const member = await addMember(owner.gymId);
+    const first = await addTrainer(owner.gymId, { name: 'Coach One' });
+    const second = await addTrainer(owner.gymId, { name: 'Coach Two', ptFee: 9000 });
+
+    await api()
+      .put(`/api/members/${member.id}`)
+      .set('Cookie', owner.cookie)
+      .send({ trainerId: first.id });
+    await api()
+      .put(`/api/members/${member.id}`)
+      .set('Cookie', owner.cookie)
+      .send({ trainerId: second.id });
+
+    // A switch is a new engagement, so it bills — at the new trainer's price.
+    const charges = await prisma.payment.findMany({
+      where: { memberId: member.id, type: 'other' },
+      orderBy: { paymentDate: 'asc' },
+    });
+    expect(charges).toHaveLength(2);
+    expect(charges[1]!.amount.toNumber()).toBe(9000);
+  });
+
+  it('does not charge again when the same trainer is re-saved', async () => {
+    const owner = await makeGym();
+    await setFee(owner.gymId, 5000);
+    const member = await addMember(owner.gymId);
+    const trainer = await addTrainer(owner.gymId);
+
+    await api()
+      .put(`/api/members/${member.id}`)
+      .set('Cookie', owner.cookie)
+      .send({ trainerId: trainer.id });
+    await api()
+      .put(`/api/members/${member.id}`)
+      .set('Cookie', owner.cookie)
+      .send({ trainerId: trainer.id, name: 'Renamed Member' });
+
+    expect(
+      await prisma.payment.count({ where: { memberId: member.id, type: 'other' } }),
+    ).toBe(1);
+  });
+});
+
+describe('Gym settings', () => {
+  it('lets the owner change the default fee, and it takes effect', async () => {
+    const owner = await makeGym();
+    const trainer = await addTrainer(owner.gymId);
+
+    const put = await api()
+      .put('/api/gym-settings')
+      .set('Cookie', owner.cookie)
+      .send({ defaultPtFee: 3000 });
+    expect(put.status).toBe(200);
+    expect(put.body.defaultPtFee).toBe(3000);
+
+    const res = await api()
+      .post('/api/members')
+      .set('Cookie', owner.cookie)
+      .send({ name: 'Ali Khan', phone: '03001234567', trainerId: trainer.id });
+
+    expect((await feeCharge(res.body.id))?.amount.toNumber()).toBe(3000);
+  });
+
+  it('returns the fee as a number, not a Decimal string', async () => {
+    const owner = await makeGym();
+    await setFee(owner.gymId, 1234.5);
+    const res = await api().get('/api/gym-settings').set('Cookie', owner.cookie);
+    expect(res.body.defaultPtFee).toBe(1234.5);
+  });
+
+  it('refuses a negative fee', async () => {
+    const owner = await makeGym();
+    const res = await api()
+      .put('/api/gym-settings')
+      .set('Cookie', owner.cookie)
+      .send({ defaultPtFee: -1 });
+    expect(res.status).toBe(400);
+  });
+
+  it('lets staff read the fee but not set it', async () => {
+    const owner = await makeGym();
+    const staff = await addUser(owner.gymId, { role: 'staff', staffPermission: 'manager' });
+
+    expect((await api().get('/api/gym-settings').set('Cookie', staff.cookie)).status).toBe(200);
+
+    const put = await api()
+      .put('/api/gym-settings')
+      .set('Cookie', staff.cookie)
+      .send({ defaultPtFee: 999 });
+    expect(put.status).toBe(403);
+  });
+
+  it('records a price change in the audit log', async () => {
+    const owner = await makeGym();
+    await api()
+      .put('/api/gym-settings')
+      .set('Cookie', owner.cookie)
+      .send({ defaultPtFee: 4500 });
+
+    const entry = await prisma.auditLog.findFirst({
+      where: { gymId: owner.gymId, action: 'gym.settingsUpdate' },
+    });
+    expect(entry).toBeTruthy();
+  });
+
+  it('leaves no audit entry when the fee is saved unchanged', async () => {
+    const owner = await makeGym();
+    await setFee(owner.gymId, 4500);
+    await api()
+      .put('/api/gym-settings')
+      .set('Cookie', owner.cookie)
+      .send({ defaultPtFee: 4500 });
+
+    expect(
+      await prisma.auditLog.count({ where: { gymId: owner.gymId, action: 'gym.settingsUpdate' } }),
+    ).toBe(0);
+  });
+});
+
+describe('Trainer ptFee round-trip', () => {
+  it('stores and returns a per-trainer price', async () => {
+    const owner = await makeGym();
+    const created = await api()
+      .post('/api/trainers')
+      .set('Cookie', owner.cookie)
+      .send({ name: 'Coach Sara', commissionPercentage: 10, ptFee: 8000 });
+
+    expect(created.status).toBe(201);
+    expect(created.body.ptFee).toBe(8000);
+
+    const list = await api().get('/api/trainers').set('Cookie', owner.cookie);
+    expect(list.body[0].ptFee).toBe(8000);
+  });
+
+  it('defaults to null, meaning the gym price applies', async () => {
+    const owner = await makeGym();
+    const created = await api()
+      .post('/api/trainers')
+      .set('Cookie', owner.cookie)
+      .send({ name: 'Coach Bilal', commissionPercentage: 10 });
+
+    expect(created.body.ptFee).toBeNull();
+  });
+
+  it('can be cleared back to the gym default', async () => {
+    const owner = await makeGym();
+    const created = await api()
+      .post('/api/trainers')
+      .set('Cookie', owner.cookie)
+      .send({ name: 'Coach Sara', commissionPercentage: 10, ptFee: 8000 });
+
+    const updated = await api()
+      .put(`/api/trainers/${created.body.id}`)
+      .set('Cookie', owner.cookie)
+      .send({ ptFee: null });
+
+    // null is written through, unlike undefined which leaves the field alone.
+    expect(updated.body.ptFee).toBeNull();
+  });
+});

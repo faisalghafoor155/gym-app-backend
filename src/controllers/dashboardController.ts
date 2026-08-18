@@ -70,6 +70,7 @@ export const getStats = async (req: AuthedRequest, res: Response): Promise<void>
       todayAttendance, recentMembers, duePayments,
       followUpMemberships, lapsedCount,
       attendanceRows, paymentRows, dueAmount, monthMemberships, gym,
+      expenseRows,
     ] = await Promise.all([
       prisma.member.count({ where: { gymId } }),
       prisma.membership.count({ where: { ...live, expiryDate: { gt: soon } } }),
@@ -150,6 +151,16 @@ export const getStats = async (req: AuthedRequest, res: Response): Promise<void>
         where: { id: gymId },
         select: { createdAt: true },
       }),
+
+      // Spending over the same window as revenue, so the two can be charted
+      // against each other month by month. Behind `canViewReports` for the
+      // same reason revenue is: it is the gym's books, not the day's work.
+      canViewReports
+        ? prisma.expense.findMany({
+            where: { gymId, spentOn: { gte: revenueSince } },
+            select: { amount: true, spentOn: true },
+          })
+        : Promise.resolve([]),
     ]);
 
     // ------------------------------------------------------------- charts
@@ -175,10 +186,28 @@ export const getStats = async (req: AuthedRequest, res: Response): Promise<void>
         revenueBuckets.set(k, bucket.plus(p.amount));
       }
     }
+    // Spending bucketed the same way and over the same months, so the two
+    // series line up index for index and a chart can plot them together
+    // without the client having to reconcile two different month lists.
+    const expenseBuckets = new Map<string, Prisma.Decimal>(
+      [...revenueBuckets.keys()].map(k => [k, new Prisma.Decimal(0)]),
+    );
+    for (const e of expenseRows) {
+      const k = monthKey(e.spentOn);
+      const bucket = expenseBuckets.get(k);
+      if (bucket) {
+        expenseBuckets.set(k, bucket.plus(e.amount));
+      }
+    }
+
     const revenueByMonth = [...revenueBuckets].map(([month, total]) => ({
       month,
       label: new Date(`${month}-01T00:00:00`).toLocaleDateString('en-PK', { month: 'short' }),
       total: total.toNumber(),
+      expenses: expenseBuckets.get(month)?.toNumber() ?? 0,
+      // Carried per month rather than derived on the client, so the figure on
+      // the chart and the figure in the tile can never disagree.
+      profit: total.minus(expenseBuckets.get(month) ?? 0).toNumber(),
     }));
 
     // Every day in the window gets a bucket, including the empty ones — a gap
@@ -204,6 +233,8 @@ export const getStats = async (req: AuthedRequest, res: Response): Promise<void>
 
     const thisMonth = revenueByMonth.at(-1)?.total ?? 0;
     const lastMonth = revenueByMonth.at(-2)?.total ?? 0;
+    const expensesThisMonth = revenueByMonth.at(-1)?.expenses ?? 0;
+    const expensesLastMonth = revenueByMonth.at(-2)?.expenses ?? 0;
 
     // This calendar month broken down by what the money was for: the front desk
     // takes membership fees and supplement money through the same till, and
@@ -284,6 +315,12 @@ export const getStats = async (req: AuthedRequest, res: Response): Promise<void>
         revenue: {
           thisMonth,
           lastMonth,
+          expensesThisMonth,
+          expensesLastMonth,
+          // What the gym actually kept. Subtracted from figures already
+          // rounded to the paisa, so the arithmetic is exact.
+          profitThisMonth: thisMonth - expensesThisMonth,
+          profitLastMonth: lastMonth - expensesLastMonth,
           // `_sum` is summed by Postgres in numeric, so it arrives exact and
           // only needs converting for the wire.
           dueTotal: dueAmount?._sum.amount?.toNumber() ?? 0,

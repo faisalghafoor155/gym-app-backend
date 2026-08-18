@@ -24,6 +24,9 @@ import ptSessionsRoutes from "./routes/ptSessions.js";
 import classesRoutes from "./routes/classes.js";
 import classBookingsRoutes from "./routes/classBookings.js";
 import onlinePaymentsRoutes from "./routes/onlinePayments.js";
+import gymSettingsRoutes from "./routes/gymSettings.js";
+import expensesRoutes from "./routes/expenses.js";
+import { hasLiveGateway } from "./services/gateways/index.js";
 import { startJobs } from "./jobs/index.js";
 
 // Fail loudly at boot rather than turning every login into a generic 500.
@@ -36,6 +39,17 @@ for (const key of ["JWT_SECRET", "DATABASE_URL"] as const) {
 if (process.env.JWT_SECRET!.length < 32) {
   console.error("JWT_SECRET must be at least 32 characters");
   process.exit(1);
+}
+
+// Said once at boot rather than left for an operator to infer from a member
+// complaining that renewals never complete. Without a configured gateway the
+// portal still works — it files front-desk requests instead of taking cards.
+if (!hasLiveGateway()) {
+  console.warn(
+    "[online-payments] no payment gateway configured; online renewals will be " +
+      "recorded as front-desk requests for staff to confirm. Set JAZZCASH_* or " +
+      "EASYPAISA_* to take payments online.",
+  );
 }
 
 const app = express();
@@ -113,6 +127,25 @@ app.use("/api/auth/accept-invite", authLimiter);
 // guess at the second factor — it must cost the same as guessing a password.
 app.use("/api/auth/two-factor/verify-login", authLimiter);
 
+// Starting a checkout writes a row and calls out to a provider. Unthrottled,
+// one member holding the button down fills the intents table; a stranger
+// hammering the callback path gets unlimited free guesses at a signature.
+// Successful attempts count here, unlike the auth limiter — a member does not
+// legitimately start twenty payments in a quarter of an hour.
+const paymentLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 20,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { error: "Too many payment attempts. Please try again shortly." },
+  skip: (req) =>
+    process.env.NODE_ENV === "test" &&
+    req.headers["x-test-skip-ratelimit"] === "1",
+});
+
+app.use("/api/online-payments/checkout", paymentLimiter);
+app.use("/api/online-payments/callback", paymentLimiter);
+
 app.use("/api/auth", authRoutes);
 app.use("/api/auth/two-factor", twoFactorRoutes);
 app.use("/api/users", usersRoutes);
@@ -130,6 +163,8 @@ app.use("/api/pt-sessions", ptSessionsRoutes);
 app.use("/api/classes", classesRoutes);
 app.use("/api/class-bookings", classBookingsRoutes);
 app.use("/api/online-payments", onlinePaymentsRoutes);
+app.use("/api/gym-settings", gymSettingsRoutes);
+app.use("/api/expenses", expensesRoutes);
 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });
