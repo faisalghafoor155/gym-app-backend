@@ -1,7 +1,7 @@
 /** @format */
 
 import type { Response } from "express";
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import prisma from "../db.js";
 import { audit, diff } from "../services/audit.js";
 import {
@@ -337,6 +337,25 @@ export const create = async (
         });
       }
 
+      if (fields.trainerId) {
+        const trainer = await tx.trainer.findUnique({
+          where: { id: fields.trainerId },
+        });
+        if (trainer) {
+          await tx.payment.create({
+            data: {
+              gymId: req.gymId,
+              memberId: created.id,
+              amount: new Prisma.Decimal(10000),
+              status: 'due',
+              method: 'cash',
+              type: 'other',
+              notes: `Trainer Fee (PT) for instructor: ${trainer.name}`,
+            },
+          });
+        }
+      }
+
       return created;
     });
 
@@ -388,6 +407,7 @@ export const update = async (
     dateOfBirth,
     address,
     emergencyContact,
+    trainerId,
   } = req.body;
   try {
     const existing = await prisma.member.findFirst({
@@ -437,18 +457,41 @@ export const update = async (
       }
     }
 
-    await prisma.member.update({
-      where: { id },
-      data: {
-        ...(name && { name }),
-        ...(email !== undefined && { email }),
-        ...(phone !== undefined && { phone }),
-        ...photoData,
-        ...(gender !== undefined && { gender }),
-        ...(dateOfBirth !== undefined && { dateOfBirth }),
-        ...(address !== undefined && { address }),
-        ...(emergencyContact !== undefined && { emergencyContact }),
-      },
+    await prisma.$transaction(async (tx) => {
+      // If trainerId is changing from none to a specific trainer, charge the fee
+      if (trainerId && trainerId !== existing.trainerId) {
+        const trainer = await tx.trainer.findUnique({
+          where: { id: trainerId },
+        });
+        if (trainer) {
+          await tx.payment.create({
+            data: {
+              gymId: req.gymId,
+              memberId: id,
+              amount: new Prisma.Decimal(10000),
+              status: 'due',
+              method: 'cash',
+              type: 'other',
+              notes: `Trainer Fee (PT) for instructor: ${trainer.name}`,
+            },
+          });
+        }
+      }
+
+      await tx.member.update({
+        where: { id },
+        data: {
+          ...(name && { name }),
+          ...(email !== undefined && { email }),
+          ...(phone !== undefined && { phone }),
+          ...photoData,
+          ...(gender !== undefined && { gender }),
+          ...(dateOfBirth !== undefined && { dateOfBirth }),
+          ...(address !== undefined && { address }),
+          ...(emergencyContact !== undefined && { emergencyContact }),
+          ...(trainerId !== undefined && { trainerId }),
+        },
+      });
     });
 
     const full = await prisma.member.findUniqueOrThrow({
