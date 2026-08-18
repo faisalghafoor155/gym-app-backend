@@ -211,6 +211,21 @@ const memberBase = {
     .transform(() => null)
     .or(money)
     .nullish(),
+  /**
+   * Whether the trainer fee was collected at the counter there and then.
+   *
+   * Defaults to false, which records a due — the safe answer, since claiming
+   * money arrived when it did not is the worse error of the two. At
+   * registration the cash usually is taken on the spot, so this saves the
+   * front desk a second trip to the Payments page to settle a fee they are
+   * holding in their hand.
+   *
+   * A strict boolean, deliberately not `z.coerce.boolean()`: coercion is
+   * JavaScript truthiness, so the string `"false"` would arrive as `true` and
+   * silently mark an uncollected fee as paid. The client sends JSON, so it has
+   * a real boolean to send.
+   */
+  ptFeePaid: z.boolean().optional(),
 };
 
 // Membership details are no longer part of a member. A member can be created

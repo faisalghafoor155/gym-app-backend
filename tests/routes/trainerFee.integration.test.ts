@@ -279,6 +279,127 @@ describe('Trainer fee — negotiated at the desk', () => {
   });
 });
 
+describe('Trainer fee — collected at the counter', () => {
+  it('records a paid fee when the money was taken there and then', async () => {
+    const owner = await makeGym();
+    await setFee(owner.gymId, 10000);
+    const trainer = await addTrainer(owner.gymId);
+
+    const res = await api()
+      .post('/api/members')
+      .set('Cookie', owner.cookie)
+      .send({
+        name: 'Ali Khan',
+        phone: '03001234567',
+        trainerId: trainer.id,
+        ptFee: 8000,
+        ptFeePaid: true,
+      });
+
+    const charge = await feeCharge(res.body.id);
+    expect(charge?.status).toBe('paid');
+    expect(charge?.amount.toNumber()).toBe(8000);
+    // Attributed, because somebody actually took it.
+    expect(charge?.recordedById).toBe(owner.userId);
+  });
+
+  it('still defaults to a due when nothing is said', async () => {
+    const owner = await makeGym();
+    await setFee(owner.gymId, 10000);
+    const trainer = await addTrainer(owner.gymId);
+
+    const res = await api()
+      .post('/api/members')
+      .set('Cookie', owner.cookie)
+      .send({ name: 'Ali Khan', phone: '03001234567', trainerId: trainer.id });
+
+    const charge = await feeCharge(res.body.id);
+    // Claiming money arrived when it did not is the worse of the two errors.
+    expect(charge?.status).toBe('due');
+  });
+
+  it('leaves a due unattributed — nobody has taken it yet', async () => {
+    const owner = await makeGym();
+    await setFee(owner.gymId, 10000);
+    const trainer = await addTrainer(owner.gymId);
+
+    const res = await api()
+      .post('/api/members')
+      .set('Cookie', owner.cookie)
+      .send({ name: 'Ali Khan', phone: '03001234567', trainerId: trainer.id, ptFeePaid: false });
+
+    const charge = await feeCharge(res.body.id);
+    expect(charge?.status).toBe('due');
+    // Naming whoever typed the form would read as "this person took the money".
+    expect(charge?.recordedById).toBeNull();
+  });
+
+  it('refuses a non-boolean rather than guessing at it', async () => {
+    const owner = await makeGym();
+    const trainer = await addTrainer(owner.gymId);
+
+    // `z.coerce.boolean()` would read the string "false" as true and mark an
+    // uncollected fee paid, so the schema is strict and this is a 400.
+    const res = await api()
+      .post('/api/members')
+      .set('Cookie', owner.cookie)
+      .send({ name: 'Ali Khan', phone: '03001234567', trainerId: trainer.id, ptFeePaid: 'false' });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('counts a paid fee as revenue and a due one as outstanding', async () => {
+    const owner = await makeGym();
+    await setFee(owner.gymId, 10000);
+    const paidTrainer = await addTrainer(owner.gymId, { name: 'Coach Paid' });
+    const dueTrainer = await addTrainer(owner.gymId, { name: 'Coach Due' });
+
+    await api()
+      .post('/api/members')
+      .set('Cookie', owner.cookie)
+      .send({ name: 'A', phone: '03001111111', trainerId: paidTrainer.id, ptFee: 8000, ptFeePaid: true });
+    await api()
+      .post('/api/members')
+      .set('Cookie', owner.cookie)
+      .send({ name: 'B', phone: '03002222222', trainerId: dueTrainer.id, ptFee: 5000 });
+
+    const profit = await api().get('/api/expenses/profit').set('Cookie', owner.cookie);
+    // This is the whole point of the toggle: a fee taken at the counter must
+    // not sit in the "money we are owed" column.
+    expect(profit.body.revenue).toBe(8000);
+    expect(profit.body.outstanding).toBe(5000);
+  });
+
+  it('takes a paid fee when a trainer is hired from the edit form', async () => {
+    const owner = await makeGym();
+    await setFee(owner.gymId, 10000);
+    const member = await addMember(owner.gymId);
+    const trainer = await addTrainer(owner.gymId);
+
+    await api()
+      .put(`/api/members/${member.id}`)
+      .set('Cookie', owner.cookie)
+      .send({ trainerId: trainer.id, ptFee: 7500, ptFeePaid: true });
+
+    const charge = await feeCharge(member.id);
+    expect(charge?.status).toBe('paid');
+    expect(charge?.amount.toNumber()).toBe(7500);
+  });
+
+  it('raises nothing at all when a free assignment is marked paid', async () => {
+    const owner = await makeGym();
+    const trainer = await addTrainer(owner.gymId, { ptFee: 0 });
+
+    const res = await api()
+      .post('/api/members')
+      .set('Cookie', owner.cookie)
+      .send({ name: 'Ali Khan', phone: '03001234567', trainerId: trainer.id, ptFeePaid: true });
+
+    // A zero-rupee receipt is no more use than a zero-rupee debt.
+    expect(await feeCharge(res.body.id)).toBeNull();
+  });
+});
+
 describe('Trainer fee — on assignment via edit', () => {
   it('charges when a member moves onto a trainer', async () => {
     const owner = await makeGym();

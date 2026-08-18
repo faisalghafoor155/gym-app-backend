@@ -260,9 +260,10 @@ export const create = async (
   req: AuthedRequest<Record<string, string>, unknown, CreateMemberBody>,
   res: Response,
 ): Promise<void> => {
-  // `ptFee` is pulled out with the rest: it prices the trainer assignment and
-  // is not a column on the member, so it must not reach the create below.
-  const { planId, startDate, photo, ptFee, ...fields } = req.body;
+  // `ptFee`/`ptFeePaid` are pulled out with the rest: they price and settle the
+  // trainer assignment and are not columns on the member, so they must not
+  // reach the create below.
+  const { planId, startDate, photo, ptFee, ptFeePaid, ...fields } = req.body;
   try {
     if (planId) {
       const plan = await prisma.membershipPlan.findFirst({
@@ -353,7 +354,7 @@ export const create = async (
             created.id,
             trainer,
             { defaultPtFee: gym.defaultPtFee },
-            ptFee,
+            { override: ptFee, paid: ptFeePaid, recordedById: req.userId },
           );
           if (charge) await tx.payment.create({ data: charge });
         }
@@ -412,6 +413,7 @@ export const update = async (
     emergencyContact,
     trainerId,
     ptFee,
+    ptFeePaid,
   } = req.body;
   try {
     const existing = await prisma.member.findFirst({
@@ -477,7 +479,11 @@ export const update = async (
           }),
         ]);
         if (trainer) {
-          const charge = buildPtFeeCharge(req.gymId, id, trainer, gym, ptFee);
+          const charge = buildPtFeeCharge(req.gymId, id, trainer, gym, {
+            override: ptFee,
+            paid: ptFeePaid,
+            recordedById: req.userId,
+          });
           if (charge) await tx.payment.create({ data: charge });
         }
       }
