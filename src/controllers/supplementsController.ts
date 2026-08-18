@@ -6,7 +6,7 @@ import { sum, withMoney } from '../services/money.js';
 import type { AuthedRequest } from '../types.js';
 import type {
   CreateSupplementBody, UpdateSupplementBody, SellSupplementBody,
-  RestockSupplementBody, SalesReportQuery, IdParam,
+  CheckoutCartBody, RestockSupplementBody, SalesReportQuery, IdParam,
 } from '../schemas.js';
 
 /** Thrown when the guarded decrement finds the stock already gone, so the
@@ -349,5 +349,130 @@ export const salesReport = async (
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * Processes shopping cart checkouts containing multiple products/supplements.
+ */
+export const checkoutCart = async (
+  req: AuthedRequest<unknown, unknown, CheckoutCartBody>,
+  res: Response,
+): Promise<void> => {
+  const { memberId, paymentMethod, items, notes } = req.body;
+  try {
+    // 1. Validate member if provided
+    let member: { id: string; name: string } | null = null;
+    if (memberId) {
+      member = await prisma.member.findFirst({
+        where: { id: memberId, gymId: req.gymId },
+        select: { id: true, name: true },
+      });
+      if (!member) {
+        res.status(404).json({ error: 'Member not found' });
+        return;
+      }
+    }
+
+    // 2. Fetch and validate all products
+    const supplementIds = items.map(it => it.supplementId);
+    const supplements = await prisma.supplement.findMany({
+      where: { id: { in: supplementIds }, gymId: req.gymId },
+    });
+
+    if (supplements.length !== new Set(supplementIds).size) {
+      res.status(400).json({ error: 'One or more items in the cart are invalid' });
+      return;
+    }
+
+    // Map by ID for easy access
+    const supplementsMap = new Map(supplements.map(s => [s.id, s]));
+
+    // Perform checks
+    for (const item of items) {
+      const supp = supplementsMap.get(item.supplementId);
+      if (!supp) continue;
+      if (supp.price == null) {
+        res.status(400).json({ error: `Price not set for product "${supp.name}"` });
+        return;
+      }
+      if (supp.stock < item.quantity) {
+        res.status(400).json({
+          error: `Insufficient stock for product "${supp.name}" (In stock: ${supp.stock})`
+        });
+        return;
+      }
+    }
+
+    // 3. Process checkout in transaction
+    const sales = await prisma.$transaction(async (tx) => {
+      const results = [];
+      for (const item of items) {
+        const supp = supplementsMap.get(item.supplementId)!;
+        
+        // Decrement stock
+        const claimed = await tx.supplement.updateMany({
+          where: { id: item.supplementId, gymId: req.gymId, stock: { gte: item.quantity } },
+          data: { stock: { decrement: item.quantity } },
+        });
+        if (claimed.count === 0) {
+          throw new OutOfStockError();
+        }
+
+        const itemTotal = supp.price!.times(item.quantity);
+
+        // Link payment if member is selected
+        let paymentId: string | undefined = undefined;
+        if (member) {
+          const payment = await tx.payment.create({
+            data: {
+              gymId: req.gymId,
+              memberId: member.id,
+              amount: itemTotal,
+              method: paymentMethod || 'cash',
+              status: 'paid',
+              type: 'other',
+              recordedById: req.userId,
+              notes: `POS Cart checkout for product: ${supp.name}${notes ? ` - ${notes}` : ''}`,
+            },
+          });
+          paymentId = payment.id;
+        }
+
+        // Create sale record
+        const sale = await tx.supplementSale.create({
+          data: {
+            gymId: req.gymId,
+            supplementId: item.supplementId,
+            memberId: memberId || null,
+            quantity: item.quantity,
+            unitPrice: supp.price!,
+            total: itemTotal,
+            paymentId: paymentId || null,
+            notes: notes || null,
+          },
+        });
+
+        results.push(sale);
+      }
+      return results;
+    });
+
+    await audit(req, {
+      action: 'supplement.checkoutCart',
+      entity: 'supplement',
+      entityId: req.gymId,
+      entityLabel: `POS Cart checkout of ${items.length} items`,
+      after: { items, memberId, paymentMethod },
+    });
+
+    res.status(201).json({ success: true, salesCount: sales.length });
+  } catch (err) {
+    if (err instanceof OutOfStockError) {
+      res.status(400).json({ error: 'Checkout failed due to insufficient stock' });
+      return;
+    }
+    console.error(err);
+    res.status(500).json({ error: 'Server error during POS checkout' });
   }
 };

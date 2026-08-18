@@ -11,6 +11,7 @@ import {
   createSupplementSchema,
   updateSupplementSchema,
   sellSupplementSchema,
+  checkoutCartSchema,
   restockSupplementSchema,
   salesReportQuerySchema,
 } from "../schemas.js";
@@ -20,6 +21,7 @@ import {
   update,
   remove,
   sell,
+  checkoutCart,
   restock,
   salesReport,
 } from "../controllers/supplementsController.js";
@@ -74,6 +76,13 @@ router.post(
   validate(idParam, "params"),
   validate(restockSupplementSchema),
   authed(restock),
+);
+
+router.post(
+  "/checkout-pos",
+  requirePermission("canSellSupplements"),
+  validate(checkoutCartSchema),
+  authed(checkoutCart),
 );
 
 export default router;

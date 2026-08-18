@@ -476,6 +476,16 @@ export const sellSupplementSchema = z.object({
   soldAt: date.optional(),
 });
 
+export const checkoutCartSchema = z.object({
+  memberId: uuid.nullish(),
+  paymentMethod: z.enum(['cash', 'card']).default('cash'),
+  notes: optionalText(500),
+  items: z.array(z.object({
+    supplementId: uuid,
+    quantity: z.coerce.number().int().min(1).max(1000),
+  })).min(1, 'must have at least one item'),
+});
+
 /** Stock arriving from a supplier. Separate from `update` so restocking is an
  *  event with a reason, not an untraceable edit to a number. */
 export const restockSupplementSchema = z.object({
@@ -629,6 +639,7 @@ export type AssignPlanBody = z.infer<typeof assignPlanSchema>;
 export type CreateSupplementBody = z.infer<typeof createSupplementSchema>;
 export type UpdateSupplementBody = z.infer<typeof updateSupplementSchema>;
 export type SellSupplementBody = z.infer<typeof sellSupplementSchema>;
+export type CheckoutCartBody = z.infer<typeof checkoutCartSchema>;
 export type RestockSupplementBody = z.infer<typeof restockSupplementSchema>;
 export type SalesReportQuery = z.infer<typeof salesReportQuerySchema>;
 export type IdParam = z.infer<typeof idParam>;
