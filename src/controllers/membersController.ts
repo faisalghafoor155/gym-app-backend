@@ -48,6 +48,16 @@ const memberFields = {
   createdAt: true,
   trainerId: true,
   trainer: { select: { id: true, name: true } },
+  /**
+   * The member's fingerprint enrolment, minus the template itself.
+   *
+   * Deliberately not `true`: that would put every enrolled member's biometric
+   * on the wire on every page of the roster. The list only needs to know
+   * whether there is one and when it was taken, so that is all it is given.
+   */
+  fingerprint: {
+    select: { id: true, enrolledAt: true, finger: true, format: true },
+  },
 } as const;
 
 /**

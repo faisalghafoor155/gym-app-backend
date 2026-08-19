@@ -394,6 +394,54 @@ export const auditLogQuerySchema = z
 
 export const checkinSchema = z.object({ memberId: uuid });
 
+// --- fingerprint -------------------------------------------------------
+
+/**
+ * A template as it arrives over the wire: base64, because JSON has no way to
+ * carry bytes. Decoded to a Buffer at the controller and stored as `Bytes` —
+ * the encoding is a transport detail and does not reach the database.
+ *
+ * The ceiling is generous by the standards of the hardware. Vendor templates
+ * run to a few hundred bytes and the largest in common use is under 2 KB; 64 KB
+ * of base64 is roughly 48 KB decoded, which no reader will produce and which is
+ * small enough that a bad request cannot be used to push anything substantial
+ * into the row.
+ */
+const fingerprintTemplate = z
+  .string()
+  .min(1, "is required")
+  .max(65_536, "is too large")
+  .refine(
+    (v) => /^[A-Za-z0-9+/]+={0,2}$/.test(v) && v.length % 4 === 0,
+    "must be base64",
+  );
+
+export const enrollFingerprintSchema = z.object({
+  memberId: uuid,
+  template: fingerprintTemplate,
+  /** Whose encoding the template is in. Must match the active device, which
+   *  the controller checks — a template from a reader the gym no longer owns
+   *  is unmatchable, and storing it would only fail later at the desk. */
+  format: z.string().trim().min(1, "is required").max(50, "is too long"),
+  /** Free text, for the desk's benefit: "right thumb". Nothing branches on it. */
+  finger: z.string().trim().max(30, "is too long").optional(),
+});
+
+/**
+ * A check-in attempt from the reader.
+ *
+ * Both fields are optional and exactly one is expected, which the controller
+ * enforces rather than the schema: which one arrives depends on whether the
+ * device matches internally, and that is a fact about the hardware the client
+ * should not have to encode as a request shape. A device that matched locally
+ * sends `externalId`; one that did not sends the `template` it captured.
+ */
+export const identifyFingerprintSchema = z.object({
+  externalId: uuid.optional(),
+  template: fingerprintTemplate.optional(),
+  format: z.string().trim().min(1).max(50).optional(),
+});
+
 // --- payments ----------------------------------------------------------
 
 export const createPaymentSchema = z.object({
@@ -797,6 +845,8 @@ export type ExtendMembershipBody = z.infer<typeof extendMembershipSchema>;
 export type MembershipParams = z.infer<typeof membershipParams>;
 export type AuditLogQuery = z.infer<typeof auditLogQuerySchema>;
 export type CheckinBody = z.infer<typeof checkinSchema>;
+export type EnrollFingerprintBody = z.infer<typeof enrollFingerprintSchema>;
+export type IdentifyFingerprintBody = z.infer<typeof identifyFingerprintSchema>;
 export type CreatePaymentBody = z.infer<typeof createPaymentSchema>;
 export type UpdatePaymentBody = z.infer<typeof updatePaymentSchema>;
 export type PaymentQuery = z.infer<typeof paymentQuerySchema>;

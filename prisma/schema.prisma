@@ -115,6 +115,7 @@ model Gym {
   classBookings   ClassBooking[]
   paymentIntents  PaymentIntent[]
   expenses        Expense[]
+  fingerprints    FingerprintTemplate[]
 }
 
 /// Every account that can sign in. The first user created for a gym is its
@@ -223,6 +224,7 @@ model Member {
   ptSessions      PtSession[]
   classBookings   ClassBooking[]
   paymentIntents  PaymentIntent[]
+  fingerprint     FingerprintTemplate?
 
   @@unique([gymId, memberNo])
   @@index([gymId])
@@ -324,6 +326,49 @@ model Attendance {
   @@unique([memberId, checkedInOn])
   @@index([gymId, checkedInAt])
   @@index([memberId])
+}
+
+/// A member's enrolled fingerprint, as the reader's own encoding of it.
+///
+/// `template` is never an image and never anything a finger could be
+/// reconstructed from: readers emit a proprietary feature vector, and that
+/// opaque blob is all that is kept. It is stored `Bytes` rather than a string
+/// because that is what every SDK hands over, and encoding it to base64 to fit
+/// a text column would only make it bigger and no more readable.
+///
+/// `format` names whose encoding it is — "zkteco-v10", "suprema-v2", and so on.
+/// Templates are not portable between vendors, so a gym that replaces its
+/// reader with a different make has to re-enrol everybody. Recording the format
+/// is what lets that be detected and said out loud, rather than discovered as a
+/// morning where nobody's finger works. The device adapter refuses to match
+/// templates it did not write.
+///
+/// One row per member, hence `@unique` on memberId: re-enrolling replaces the
+/// template rather than accumulating variants. Multi-finger enrolment would be
+/// a second row per finger and is deliberately not modelled yet — see
+/// `services/fingerprint/README.md`.
+model FingerprintTemplate {
+  id       String @id @default(uuid())
+  memberId String @unique
+  gymId    String
+
+  template Bytes
+  format   String
+
+  /// Which finger this is, if the desk bothered to say. Free text rather than
+  /// an enum: it exists to help a receptionist say "your right thumb, not your
+  /// index" and nothing in the code branches on it.
+  finger String?
+
+  enrolledAt DateTime @default(now())
+  /// Who enrolled it. Biometric enrolment is the one action here worth being
+  /// able to attribute later, and a name costs nothing to keep.
+  enrolledBy String?
+
+  member Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  gym    Gym    @relation(fields: [gymId], references: [id])
+
+  @@index([gymId])
 }
 
 model Payment {
