@@ -223,7 +223,6 @@ const sell = async (
       planId: plan.id,
       startDate: new Date(from[0], from[1] - 1, from[2]),
       expiryDate: new Date(to[0], to[1] - 1, to[2], 23, 59, 59, 999),
-      originalExpiryDate: new Date(to[0], to[1] - 1, to[2], 23, 59, 59, 999),
       pricePaid: price,
       status,
     },

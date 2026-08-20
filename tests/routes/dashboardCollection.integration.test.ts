@@ -32,7 +32,6 @@ const sellThisMonth = async (
       // Spans today regardless of where in the month the suite runs.
       startDate: addDays(now, -3),
       expiryDate: addDays(now, 3),
-      originalExpiryDate: addDays(now, 3),
       pricePaid: price,
       status: 'active',
     },
@@ -142,7 +141,6 @@ describe('dashboard — this month\'s fees', () => {
         planId: plan.id,
         startDate: addDays(new Date(), -200),
         expiryDate: addDays(new Date(), -170),
-        originalExpiryDate: addDays(new Date(), -170),
         pricePaid: 9999,
         status: 'expired',
       },

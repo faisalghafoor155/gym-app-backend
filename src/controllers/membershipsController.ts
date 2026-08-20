@@ -1,10 +1,10 @@
 import type { Response } from 'express';
 import prisma from '../db.js';
 import { audit } from '../services/audit.js';
-import { addDays, toView, withPlan } from '../services/membership.js';
+import { addDays, renewalStart, toView, withPlan } from '../services/membership.js';
 import type { AuthedRequest } from '../types.js';
 import type {
-  CreateMembershipBody, ExtendMembershipBody, IdParam, MembershipParams,
+  CreateMembershipBody, RenewMembershipBody, IdParam, MembershipParams,
 } from '../schemas.js';
 
 /** Everything this member has ever bought, newest first. */
@@ -98,7 +98,6 @@ export const create = async (
           planId: plan.id,
           startDate: start,
           expiryDate: expiry,
-          originalExpiryDate: expiry,
           // Snapshotted so a later price change cannot rewrite what this
           // member was actually charged.
           pricePaid: plan.price,
@@ -132,22 +131,25 @@ export const create = async (
 };
 
 /**
- * Grants extra days on a membership the member already has.
+ * Renews a membership: sells the next period and takes the money for it in one
+ * go.
  *
- * This is the only route that moves an expiry date. Selling a membership
- * derives the expiry from the plan's duration and refuses a client-supplied
- * one, so every day a member has beyond what they paid for arrives through
- * here — with a reason, an actor and an audit row attached. That is what makes
- * `expiryDate - originalExpiryDate` a number the owner can trust.
+ * Never automatic. A membership runs out and simply reads as expired until
+ * somebody at the desk collects the fee and presses the button — the gym is
+ * paid before the days are granted, not after, and nothing renews itself
+ * behind the front desk's back.
  *
- * Owner-only, because free days are money.
+ * The new period starts the day after the old one ended, so a member renewing
+ * with days still on the clock keeps them. Once the old membership has already
+ * lapsed there is nothing left to carry, and the new period starts today
+ * rather than backdating into a gap the member did not pay for.
  */
-export const extend = async (
-  req: AuthedRequest<MembershipParams, unknown, ExtendMembershipBody>,
+export const renew = async (
+  req: AuthedRequest<MembershipParams, unknown, RenewMembershipBody>,
   res: Response,
 ): Promise<void> => {
   const { id: memberId, membershipId } = req.params;
-  const { days, reason } = req.body;
+  const { planId, amount, method, channel, reference } = req.body;
   try {
     // Scoped by member and gym as well as id: a valid membership id belonging
     // to somebody else must read as missing, not as forbidden.
@@ -163,158 +165,106 @@ export const extend = async (
       return;
     }
 
-    // Superseded and cancelled memberships are closed history. Extending one
-    // would either resurrect a membership somebody deliberately called off, or
-    // move the expiry on a row that a newer membership has already replaced.
+    // Superseded and cancelled memberships are closed history. Renewing from
+    // one would either resurrect a membership somebody deliberately called
+    // off, or branch a second live membership off a row a newer one already
+    // replaced.
     if (membership.status === 'superseded' || membership.status === 'cancelled') {
-      res.status(400).json({ error: 'That membership can no longer be extended' });
+      res.status(400).json({ error: 'That membership can no longer be renewed' });
       return;
     }
 
-    const newExpiry = addDays(membership.expiryDate, days);
+    // Renewing onto a different plan is normal — a member moving from monthly
+    // to annual renews rather than starting again. Absent, it is the same plan
+    // again, which is looked up in full rather than reused from the row above:
+    // that one carries only the name and duration the view needs.
+    const plan = await prisma.membershipPlan.findFirst({
+      where: { id: planId ?? membership.planId, gymId: req.gymId },
+    });
+    if (!plan) {
+      res.status(404).json({ error: 'Membership plan not found' });
+      return;
+    }
+    // Only checked when the front desk names a plan. A retired plan must not
+    // strand the members already on it: renewing onto the same thing they
+    // already hold is continuing what they bought, not buying something the
+    // gym stopped selling.
+    if (planId && planId !== membership.planId && !plan.isActive) {
+      res.status(400).json({ error: 'That membership plan is no longer offered' });
+      return;
+    }
 
-    const updated = await prisma.membership.update({
-      where: { id: membership.id },
-      data: {
-        expiryDate: newExpiry,
-        // Accumulates, so the total granted across every extension stays
-        // readable next to originalExpiryDate, which is never touched.
-        extendedDays: { increment: days },
-        extensionReason: reason,
-        extendedBy: req.userId,
-      },
-      include: withPlan,
+    const start = renewalStart(membership.expiryDate);
+    const expiry = addDays(start, plan.durationDays);
+
+    const { created, payment } = await prisma.$transaction(async (tx) => {
+      // The old membership steps aside rather than being edited: two rows is
+      // what makes "what did this member buy, and when" answerable later.
+      await tx.membership.update({
+        where: { id: membership.id },
+        data: { status: 'superseded' },
+      });
+
+      const next = await tx.membership.create({
+        data: {
+          gymId: req.gymId,
+          memberId,
+          planId: plan.id,
+          startDate: start,
+          expiryDate: expiry,
+          // Snapshotted so a later price change cannot rewrite what this
+          // member was actually charged.
+          pricePaid: plan.price,
+        },
+        include: withPlan,
+      });
+
+      // Written in the same transaction as the membership it bought. A renewal
+      // that granted the days but lost the receipt would leave the gym's books
+      // claiming it was never paid.
+      const receipt = await tx.payment.create({
+        data: {
+          gymId: req.gymId,
+          memberId,
+          membershipId: next.id,
+          amount,
+          method,
+          channel: method === 'cash' ? null : channel ?? null,
+          reference: reference ?? null,
+          status: 'paid',
+          type: 'membership',
+          recordedById: req.userId,
+          notes: `Renewal — ${plan.name}`,
+        },
+      });
+
+      return { created: next, payment: receipt };
     });
 
     await audit(req, {
-      action: 'membership.extend',
+      action: 'membership.renew',
       entity: 'membership',
-      entityId: membership.id,
-      entityLabel: `${membership.member.memberNo} · ${membership.member.name} · ${membership.plan.name}`,
+      entityId: created.id,
+      entityLabel: `${membership.member.memberNo} · ${membership.member.name} · ${plan.name}`,
       before: {
+        membershipId: membership.id,
+        planName: membership.plan.name,
         expiryDate: membership.expiryDate,
-        extendedDays: membership.extendedDays,
       },
       after: {
-        expiryDate: newExpiry,
-        extendedDays: updated.extendedDays,
-        days,
-      },
-      reason,
-    });
-
-    res.json(toView(updated));
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error' });
-  }
-};
-
-/**
- * Suspends an active membership (freezes it).
- */
-export const freeze = async (
-  req: AuthedRequest<MembershipParams>,
-  res: Response,
-): Promise<void> => {
-  const { id: memberId, membershipId } = req.params;
-  try {
-    const membership = await prisma.membership.findFirst({
-      where: { id: membershipId, memberId, gymId: req.gymId },
-      include: {
-        ...withPlan,
-        member: { select: { name: true, memberNo: true } },
+        membershipId: created.id,
+        planName: plan.name,
+        startDate: start,
+        expiryDate: expiry,
+        pricePaid: plan.price,
+        paymentId: payment.id,
+        amountPaid: amount,
+        method,
+        ...(payment.channel && { channel: payment.channel }),
       },
     });
-    if (!membership) {
-      res.status(404).json({ error: 'Membership not found' });
-      return;
-    }
-    if (membership.status !== 'active') {
-      res.status(400).json({ error: 'Only active memberships can be frozen' });
-      return;
-    }
 
-    const updated = await prisma.membership.update({
-      where: { id: membership.id },
-      data: {
-        status: 'suspended',
-        freezeStartDate: new Date(),
-      },
-      include: withPlan,
-    });
-
-    await audit(req, {
-      action: 'membership.freeze',
-      entity: 'membership',
-      entityId: membership.id,
-      entityLabel: `${membership.member.memberNo} · ${membership.member.name} · ${membership.plan.name}`,
-      before: { status: 'active' },
-      after: { status: 'suspended', freezeStartDate: updated.freezeStartDate },
-    });
-
-    res.json(toView(updated));
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error' });
-  }
-};
-
-/**
- * Resumes a suspended membership (unfreezes it) and extends expiry Date.
- */
-export const resume = async (
-  req: AuthedRequest<MembershipParams>,
-  res: Response,
-): Promise<void> => {
-  const { id: memberId, membershipId } = req.params;
-  try {
-    const membership = await prisma.membership.findFirst({
-      where: { id: membershipId, memberId, gymId: req.gymId },
-      include: {
-        ...withPlan,
-        member: { select: { name: true, memberNo: true } },
-      },
-    });
-    if (!membership) {
-      res.status(404).json({ error: 'Membership not found' });
-      return;
-    }
-    if (membership.status !== 'suspended' || !membership.freezeStartDate) {
-      res.status(400).json({ error: 'Only frozen memberships can be resumed' });
-      return;
-    }
-
-    // Calculate days frozen
-    const now = new Date();
-    const start = new Date(membership.freezeStartDate);
-    const msDiff = now.getTime() - start.getTime();
-    // Default to at least 1 day to make sure the time is calculated appropriately
-    const daysFrozen = Math.max(1, Math.ceil(msDiff / (1000 * 60 * 60 * 24)));
-
-    const newExpiry = addDays(membership.expiryDate, daysFrozen);
-
-    const updated = await prisma.membership.update({
-      where: { id: membership.id },
-      data: {
-        status: 'active',
-        expiryDate: newExpiry,
-        extendedDays: { increment: daysFrozen },
-        freezeStartDate: null,
-      },
-      include: withPlan,
-    });
-
-    await audit(req, {
-      action: 'membership.resume',
-      entity: 'membership',
-      entityId: membership.id,
-      entityLabel: `${membership.member.memberNo} · ${membership.member.name} · ${membership.plan.name}`,
-      before: { status: 'suspended', expiryDate: membership.expiryDate },
-      after: { status: 'active', expiryDate: newExpiry, daysFrozen },
-    });
-
-    res.json(toView(updated));
+    res.status(201).json(toView(created));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });

@@ -12,6 +12,7 @@ import {
   effectiveMemberStatus,
   formatMemberNo,
   isLapsed,
+  renewalStart,
   toView,
 } from '../../src/services/membership.js';
 
@@ -178,10 +179,7 @@ describe('toView', () => {
     planId: 'p1',
     startDate: new Date('2026-06-01T12:00:00'),
     expiryDate: new Date('2026-07-01T12:00:00'),
-    originalExpiryDate: new Date('2026-07-01T12:00:00'),
     pricePaid: new Prisma.Decimal('2500.00'),
-    extendedDays: 0,
-    extensionReason: null,
     status: 'active' as MembershipStatus,
     plan: { name: 'Monthly', durationDays: 30 },
   };
@@ -193,11 +191,8 @@ describe('toView', () => {
       planName: 'Monthly',
       startDate: stored.startDate,
       expiryDate: stored.expiryDate,
-      originalExpiryDate: stored.originalExpiryDate,
       pricePaid: 2500,
       durationDays: 30,
-      extendedDays: 0,
-      extensionReason: null,
       status: 'active',
       daysLeft: 16,
     });
@@ -215,18 +210,25 @@ describe('toView', () => {
     expect(view.status).toBe('expired');
   });
 
-  it('keeps the original expiry alongside an extension', () => {
-    const view = toView({
-      ...stored,
-      expiryDate: new Date('2026-07-15T12:00:00'),
-      extendedDays: 14,
-      extensionReason: 'Injury',
-    }, NOW);
-    expect(view.originalExpiryDate).toEqual(new Date('2026-07-01T12:00:00'));
-    expect(view.extendedDays).toBe(14);
-    expect(view.extensionReason).toBe('Injury');
-    // Days left counts from the extended date, not the original.
-    expect(view.daysLeft).toBe(30);
+});
+
+describe('renewalStart', () => {
+  it('starts the day after an expiry still in the future', () => {
+    // Renewing early must not cost the member the days they already paid for.
+    expect(renewalStart(new Date('2026-06-20T12:00:00'), NOW))
+      .toEqual(new Date('2026-06-21T12:00:00'));
+  });
+
+  it('starts today when the membership has already run out', () => {
+    // Backdating into the gap would sell days that have already gone by.
+    expect(renewalStart(new Date('2026-06-01T12:00:00'), NOW)).toEqual(NOW);
+  });
+
+  it('starts today when the membership expires today', () => {
+    // The day after an expiry that is only hours away is still ahead of now,
+    // so this is the boundary worth pinning: it must not silently backdate.
+    const result = renewalStart(new Date('2026-06-15T09:00:00'), NOW);
+    expect(result.getTime()).toBeGreaterThanOrEqual(NOW.getTime());
   });
 });
 

@@ -20,6 +20,13 @@ import {
   base64ToBuffer,
   extractFilename,
 } from "../services/s3.js";
+import {
+  duplicateMessage,
+  findDuplicateMember,
+  normalizeName,
+  normalizePhone,
+  type DuplicateHit,
+} from "../services/memberDuplicate.js";
 import { buildPtFeeCharge, trainerFeeSelect } from "../services/trainerFee.js";
 import type { AuthedRequest } from "../types.js";
 import type {
@@ -27,6 +34,7 @@ import type {
   UpdateMemberBody,
   IdParam,
   MemberQuery,
+  MemberDuplicateQuery,
   MemberStatusFilter,
 } from "../schemas.js";
 
@@ -132,7 +140,7 @@ export const getAll = async (
   req: AuthedRequest<Record<string, string>, unknown, unknown, MemberQuery>,
   res: Response,
 ): Promise<void> => {
-  const { search, status, page, limit, all } = req.query;
+  const { search, status, gender, page, limit, all } = req.query;
   try {
     // One clock for the whole request, so the rows, the filter boundaries and
     // the count can never disagree about what "today" was.
@@ -140,6 +148,10 @@ export const getAll = async (
 
     const where = {
       gymId: req.gymId,
+      // Applies to every view of the roster, paged or not — a filtered list
+      // that quietly went back to everyone on the next page would be worse
+      // than no filter.
+      ...(gender && { gender }),
       // Whatever the front desk has to hand: a name, a number, or a phone.
       ...(search && {
         OR: [
@@ -191,7 +203,14 @@ export const getAll = async (
     // Counted against `searchWhere` rather than `where`: the tabs must keep
     // narrowing the current search, but must not narrow themselves by the tab
     // already selected, which would leave every other tab reading zero.
-    const searchWhere = { gymId: req.gymId, ...(where.OR && { OR: where.OR }) };
+    // Carries the gender too: with it left out, the tabs would count the whole
+    // gym while the list below showed one half, and clicking a tab reading 40
+    // would land on 18.
+    const searchWhere = {
+      gymId: req.gymId,
+      ...(gender && { gender }),
+      ...(where.OR && { OR: where.OR }),
+    };
     const countFor = (f: MemberStatusFilter) =>
       prisma.member.count({
         where: { ...searchWhere, ...memberStatusWhere(f, now) },
@@ -258,6 +277,26 @@ export const getOne = async (
 };
 
 /**
+ * Raised inside a transaction when the member being written duplicates one
+ * that already exists. Thrown rather than returned so the transaction rolls
+ * back — a duplicate detected after the gym's member counter was incremented
+ * must not leave that number spent.
+ */
+class DuplicateMemberError extends Error {
+  constructor(readonly hit: DuplicateHit) {
+    super(duplicateMessage(hit));
+    this.name = "DuplicateMemberError";
+  }
+}
+
+/** The 409 both create and update answer a duplicate with. */
+const respondDuplicate = (res: Response, hit: DuplicateHit): void => {
+  res
+    .status(409)
+    .json({ error: duplicateMessage(hit), field: hit.field, existing: hit.existing });
+};
+
+/**
  * Registers a member, optionally selling them a membership in the same breath
  * — which is what actually happens at the front desk when somebody walks in.
  *
@@ -270,10 +309,21 @@ export const create = async (
   req: AuthedRequest<Record<string, string>, unknown, CreateMemberBody>,
   res: Response,
 ): Promise<void> => {
-  // `ptFee`/`ptFeePaid` are pulled out with the rest: they price and settle the
-  // trainer assignment and are not columns on the member, so they must not
-  // reach the create below.
-  const { planId, startDate, photo, ptFee, ptFeePaid, ...fields } = req.body;
+  // `ptFee`/`ptFeePaid` and the `fee*` group are pulled out with the rest: they
+  // price and settle money taken at the counter and are not columns on the
+  // member, so they must not reach the create below.
+  const {
+    planId,
+    startDate,
+    photo,
+    ptFee,
+    ptFeePaid,
+    feeAmount,
+    feeMethod,
+    feeChannel,
+    feeReference,
+    ...fields
+  } = req.body;
   try {
     if (planId) {
       const plan = await prisma.membershipPlan.findFirst({
@@ -313,6 +363,13 @@ export const create = async (
     }
 
     const member = await prisma.$transaction(async (tx) => {
+      // Re-checked here rather than trusting the client's live check: that one
+      // is a hint typed into a form, this one is the decision. Two receptionists
+      // registering the same walk-in at once both pass the hint; only one gets
+      // past this.
+      const duplicate = await findDuplicateMember(tx, req.gymId, fields);
+      if (duplicate) throw new DuplicateMemberError(duplicate);
+
       // Incrementing and reading back in one statement is what makes two
       // receptionists adding members at the same moment safe.
       const gym = await tx.gym.update({
@@ -331,6 +388,7 @@ export const create = async (
         select: memberFields,
       });
 
+      let membershipId: string | null = null;
       if (planId) {
         const plan = await tx.membershipPlan.findUniqueOrThrow({
           where: { id: planId },
@@ -338,15 +396,39 @@ export const create = async (
         const start = startDate ?? new Date();
         const expiry = addDays(start, plan.durationDays);
 
-        await tx.membership.create({
+        const membership = await tx.membership.create({
           data: {
             gymId: req.gymId,
             memberId: created.id,
             planId: plan.id,
             startDate: start,
             expiryDate: expiry,
-            originalExpiryDate: expiry,
             pricePaid: plan.price,
+          },
+          select: { id: true },
+        });
+        membershipId = membership.id;
+      }
+
+      // The fee handed over at the counter, when one was. Linked to the
+      // membership it bought where there is one — that link is what turns "this
+      // member paid Rs. 2500" into books that reconcile.
+      if (feeAmount != null && feeAmount > 0) {
+        const method = feeMethod ?? "cash";
+        await tx.payment.create({
+          data: {
+            gymId: req.gymId,
+            memberId: created.id,
+            amount: feeAmount,
+            method,
+            // Cash never carries a wallet's name, whatever the form sent.
+            channel: method === "cash" ? null : feeChannel ?? null,
+            reference: feeReference ?? null,
+            status: "paid",
+            type: membershipId ? "membership" : "other",
+            membershipId,
+            recordedById: req.userId,
+            notes: membershipId ? "Joining fee" : "Joining fee (no plan)",
           },
         });
       }
@@ -364,7 +446,16 @@ export const create = async (
             created.id,
             trainer,
             { defaultPtFee: gym.defaultPtFee },
-            { override: ptFee, paid: ptFeePaid, recordedById: req.userId },
+            {
+              override: ptFee,
+              paid: ptFeePaid,
+              recordedById: req.userId,
+              // The member paid for the whole registration one way; the
+              // trainer fee took the same route.
+              method: feeMethod,
+              channel: feeChannel,
+              reference: feeReference,
+            },
           );
           if (charge) await tx.payment.create({ data: charge });
         }
@@ -389,6 +480,10 @@ export const create = async (
 
     res.status(201).json(view);
   } catch (err) {
+    if (err instanceof DuplicateMemberError) {
+      respondDuplicate(res, err.hit);
+      return;
+    }
     console.error(err);
     res.status(500).json({ error: "Server error" });
   }
@@ -474,6 +569,24 @@ export const update = async (
     }
 
     await prisma.$transaction(async (tx) => {
+      // An edit is checked against what the member will be, not what was
+      // typed: leaving the phone alone and changing the name still has to be
+      // compared using the phone already on file. `undefined` means "not
+      // sent", so it falls back to the stored value.
+      const duplicate = await findDuplicateMember(
+        tx,
+        req.gymId,
+        {
+          name: name ?? existing.name,
+          phone: phone === undefined ? existing.phone : phone,
+          dateOfBirth:
+            dateOfBirth === undefined ? existing.dateOfBirth : dateOfBirth,
+        },
+        // Without this a member duplicates itself the moment it is re-saved.
+        id,
+      );
+      if (duplicate) throw new DuplicateMemberError(duplicate);
+
       // Charged when the member moves onto a trainer they were not already
       // with — including a switch between trainers, since that is a new
       // engagement with a fee of its own.
@@ -532,6 +645,46 @@ export const update = async (
     }
 
     res.json(decorate(full));
+  } catch (err) {
+    if (err instanceof DuplicateMemberError) {
+      respondDuplicate(res, err.hit);
+      return;
+    }
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+/**
+ * Answers "would this person be a duplicate?" without writing anything.
+ *
+ * The add-member form asks as fields are filled, so the front desk finds out
+ * before typing the rest of the form rather than after pressing Save. It is
+ * only a hint: the create and update paths check again for themselves, and
+ * this endpoint failing is not allowed to stop a registration.
+ */
+export const checkDuplicate = async (
+  req: AuthedRequest<Record<string, string>, unknown, unknown, MemberDuplicateQuery>,
+  res: Response,
+): Promise<void> => {
+  const { name, phone, dateOfBirth, excludeId } = req.query;
+  try {
+    const hit = await findDuplicateMember(
+      prisma,
+      req.gymId,
+      { name, phone, dateOfBirth },
+      excludeId,
+    );
+    res.json(
+      hit
+        ? {
+            duplicate: true,
+            field: hit.field,
+            existing: hit.existing,
+            message: duplicateMessage(hit),
+          }
+        : { duplicate: false },
+    );
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Server error" });
@@ -629,39 +782,38 @@ export const importMembers = async (
 
       const email = (row.email ?? "").trim();
       const phone = (row.phone ?? "").trim();
-      const dedupeKey = `${(email || phone || "").toLowerCase()}`;
-      if (dedupeKey && seen.has(dedupeKey)) {
-        errors.push(`Row ${i + 1}: duplicate contact value in this CSV`);
+      const dateOfBirth = (row.dateOfBirth ?? "").trim();
+
+      // The same rules the form is held to, applied within the file as well:
+      // a CSV that lists one person twice is the commonest way a duplicate
+      // gets in, and neither row exists in the database yet to catch it.
+      const normalizedPhone = normalizePhone(phone);
+      const normalizedName = normalizeName(name);
+      const rowKeys = [
+        ...(normalizedPhone ? [`phone:${normalizedPhone}`] : []),
+        ...(normalizedName && dateOfBirth
+          ? [`name:${normalizedName}|${new Date(dateOfBirth).toDateString()}`]
+          : []),
+      ];
+      const clash = rowKeys.find((key) => seen.has(key));
+      if (clash) {
+        errors.push(
+          `Row ${i + 1}: duplicates an earlier row in this CSV (same ${
+            clash.startsWith("phone:") ? "phone" : "name and date of birth"
+          })`,
+        );
         continue;
       }
-      if (dedupeKey) seen.add(dedupeKey);
+      rowKeys.forEach((key) => seen.add(key));
 
-      const existing = await prisma.member.findFirst({
-        where: {
-          gymId: req.gymId,
-          OR: [
-            ...(email
-              ? [
-                  {
-                    email: {
-                      equals: email.toLowerCase(),
-                      mode: "insensitive" as const,
-                    },
-                  },
-                ]
-              : []),
-            ...(phone
-              ? [{ phone: { equals: phone, mode: "insensitive" as const } }]
-              : []),
-          ],
-        },
-        select: { id: true },
+      const duplicate = await findDuplicateMember(prisma, req.gymId, {
+        name,
+        phone,
+        dateOfBirth: dateOfBirth || null,
       });
 
-      if (existing) {
-        errors.push(
-          `Row ${i + 1}: member with this email or phone already exists`,
-        );
+      if (duplicate) {
+        errors.push(`Row ${i + 1}: ${duplicateMessage(duplicate)}`);
         continue;
       }
 

@@ -367,7 +367,6 @@ const settleIntent = async (
           planId: intent.planId,
           startDate,
           expiryDate,
-          originalExpiryDate: expiryDate,
           pricePaid: intent.amount,
           status: 'active',
         },

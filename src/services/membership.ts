@@ -95,11 +95,8 @@ export interface MembershipView {
   planName: string;
   startDate: Date;
   expiryDate: Date;
-  originalExpiryDate: Date;
   pricePaid: number;
   durationDays: number;
-  extendedDays: number;
-  extensionReason: string | null;
   status: DisplayStatus;
   daysLeft: number;
 }
@@ -109,13 +106,24 @@ type MembershipWithPlan = {
   planId: string;
   startDate: Date;
   expiryDate: Date;
-  originalExpiryDate: Date;
   /** Decimal in the database; `toView` is where it becomes a number. */
   pricePaid: Prisma.Decimal;
-  extendedDays: number;
-  extensionReason: string | null;
   status: MembershipStatus;
   plan: { name: string; durationDays: number };
+};
+
+/**
+ * When a renewal's new period should begin.
+ *
+ * The day after the old expiry, so a member who renews with days still on the
+ * clock keeps them — paying early must never cost somebody time they already
+ * bought. Once the old membership has lapsed there is nothing left to carry,
+ * and starting today is right: backdating into the gap would sell the member
+ * days that have already gone by.
+ */
+export const renewalStart = (previousExpiry: Date, now: Date = new Date()): Date => {
+  const dayAfter = addDays(previousExpiry, 1);
+  return dayAfter > now ? dayAfter : now;
 };
 
 /** Decorates a stored membership with the two things only the server can
@@ -126,11 +134,8 @@ export const toView = (m: MembershipWithPlan, now: Date = new Date()): Membershi
   planName: m.plan.name,
   startDate: m.startDate,
   expiryDate: m.expiryDate,
-  originalExpiryDate: m.originalExpiryDate,
   pricePaid: m.pricePaid.toNumber(),
   durationDays: m.plan.durationDays,
-  extendedDays: m.extendedDays,
-  extensionReason: m.extensionReason,
   status: displayStatus(m, now),
   daysLeft: daysUntil(m.expiryDate, now),
 });

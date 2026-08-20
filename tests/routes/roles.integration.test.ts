@@ -96,7 +96,9 @@ describe('staff routes', () => {
 
     const res = await api().post('/api/members')
       .set('Cookie', staff.cookie)
-      .send({ name: 'Added By Staff', phone: '03001234567' });
+      // A phone of its own: the fixture's member already holds the default
+      // one, and this test is about permission, not the duplicate check.
+      .send({ name: 'Added By Staff', phone: '03009998888' });
 
     expect(res.status).toBe(201);
   });

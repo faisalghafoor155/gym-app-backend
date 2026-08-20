@@ -90,6 +90,22 @@ model Gym {
   /// as a missing setting in a way that a plausible-looking 10,000 is not.
   defaultPtFee Decimal @default(0.00) @db.Decimal(10, 2)
 
+  /// Where members are told to send money, per channel — "0300-1234567" for a
+  /// wallet, "Meezan Bank, Faisal Ghafoor, PK00MEZN0001234567890123" for a
+  /// bank.
+  ///
+  /// Free text rather than structured columns: an Easypaisa account is a phone
+  /// number, a bank account is a name, a branch and an IBAN, and forcing both
+  /// into one shape would fit neither. The front desk reads this aloud, so
+  /// what matters is that it is exactly what the owner typed.
+  ///
+  /// Null means the gym has not published that channel — the form then offers
+  /// it without an account line rather than hiding it, since the money can
+  /// still arrive by a route the owner never wrote down.
+  easypaisaAccount String?
+  jazzcashAccount  String?
+  bankAccount      String?
+
   /// Counter behind the readable member numbers (MEM-00001, MEM-00002, …).
   /// Per gym, so every gym starts at 1 and nobody sees a number that hints at
   /// how many members the rest of the system has. Only ever moves forward —
@@ -269,25 +285,14 @@ model Membership {
   startDate  DateTime
   /// Always startDate + plan.durationDays, computed on the server. The client
   /// never sends this — an expiry date the front desk can type is an expiry
-  /// date the front desk can quietly extend.
+  /// date the front desk can quietly move.
   expiryDate DateTime
-  /// What the expiry was before anyone extended it. Set once at creation and
-  /// never touched again, so a granted extension is always visible as the gap
-  /// between the two.
-  originalExpiryDate DateTime
 
   /// The plan's price at the moment of sale. Snapshotted because changing a
   /// plan's price must not silently rewrite what past members were charged.
   pricePaid Decimal @db.Decimal(10, 2)
 
   status MembershipStatus @default(active)
-
-  /// Written by the extension flow in a later phase; created here so the
-  /// column exists before anything needs to fill it.
-  extendedDays    Int       @default(0)
-  extensionReason String?
-  extendedBy      String?
-  freezeStartDate DateTime?
 
   createdAt DateTime @default(now())
 
@@ -380,6 +385,21 @@ model Payment {
   method      String   @default("cash")
   notes       String?
   status      String   @default("paid")
+
+  /// Which wallet or bank the money actually came through, when `method` is
+  /// online: easypaisa, jazzcash or bank.
+  ///
+  /// Separate from `method` rather than folded into it, because "was this cash
+  /// or not" and "which wallet" are different questions — the books total by
+  /// the first and reconcile by the second, and widening `method` would have
+  /// meant revisiting every place that tests for "online". Null for cash, and
+  /// for online rows recorded before this column existed.
+  channel String?
+
+  /// The wallet's transaction id, when the front desk was given one. Optional
+  /// on purpose: staff frequently take a screenshot rather than a TID, and a
+  /// required field would be filled with junk to get past it.
+  reference String?
 
   /// What the money was for.
   type PaymentType @default(membership)

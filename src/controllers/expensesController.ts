@@ -2,6 +2,7 @@ import type { Response } from 'express';
 import { Prisma } from '@prisma/client';
 import prisma from '../db.js';
 import { audit, diff } from '../services/audit.js';
+import { endOfDayUtc } from '../services/dates.js';
 import { sum, withMoney } from '../services/money.js';
 import type { AuthedRequest } from '../types.js';
 import type {
@@ -16,13 +17,6 @@ import type {
  * than only "what came in?".
  */
 
-/** A date's last instant, so `to` includes the whole day the user named. */
-const endOfDay = (d: Date): Date => {
-  const end = new Date(d);
-  end.setHours(23, 59, 59, 999);
-  return end;
-};
-
 const expenseWhere = (
   gymId: string,
   q: Pick<ExpenseQuery, 'category' | 'search' | 'from' | 'to'>,
@@ -32,7 +26,7 @@ const expenseWhere = (
   ...((q.from || q.to) && {
     spentOn: {
       ...(q.from && { gte: q.from }),
-      ...(q.to && { lte: endOfDay(q.to) }),
+      ...(q.to && { lte: endOfDayUtc(q.to) }),
     },
   }),
   // Whatever the owner has to hand: who it was paid to, or what it was for.
@@ -221,7 +215,7 @@ export const getProfit = async (
   try {
     const dateFilter = (field: 'paymentDate' | 'spentOn') =>
       (from || to)
-        ? { [field]: { ...(from && { gte: from }), ...(to && { lte: endOfDay(to) }) } }
+        ? { [field]: { ...(from && { gte: from }), ...(to && { lte: endOfDayUtc(to) }) } }
         : {};
 
     const [revenue, outstanding, expenses, expensesByCategory, revenueByType] =

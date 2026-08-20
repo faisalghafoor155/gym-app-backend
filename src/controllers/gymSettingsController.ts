@@ -14,11 +14,29 @@ import type { UpdateGymSettingsBody } from '../schemas.js';
  * on those rows; this is only for what is genuinely gym-wide.
  */
 
+const gymSettingsFields = {
+  name: true,
+  ownerName: true,
+  phone: true,
+  defaultPtFee: true,
+  easypaisaAccount: true,
+  jazzcashAccount: true,
+  bankAccount: true,
+} as const;
+
+/** What an owner can change here, and what a change is worth logging. */
+const AUDITED_SETTINGS = [
+  'defaultPtFee',
+  'easypaisaAccount',
+  'jazzcashAccount',
+  'bankAccount',
+] as const;
+
 export const get = async (req: AuthedRequest, res: Response): Promise<void> => {
   try {
     const gym = await prisma.gym.findUniqueOrThrow({
       where: { id: req.gymId },
-      select: { name: true, ownerName: true, phone: true, defaultPtFee: true },
+      select: gymSettingsFields,
     });
     res.json({ ...gym, defaultPtFee: toNumber(gym.defaultPtFee) });
   } catch (err) {
@@ -31,22 +49,31 @@ export const update = async (
   req: AuthedRequest<unknown, unknown, UpdateGymSettingsBody>,
   res: Response,
 ): Promise<void> => {
-  const { defaultPtFee } = req.body;
+  const { defaultPtFee, easypaisaAccount, jazzcashAccount, bankAccount } = req.body;
   try {
     const before = await prisma.gym.findUniqueOrThrow({
       where: { id: req.gymId },
-      select: { defaultPtFee: true },
+      select: gymSettingsFields,
     });
 
     const after = await prisma.gym.update({
       where: { id: req.gymId },
-      data: { defaultPtFee },
-      select: { name: true, ownerName: true, phone: true, defaultPtFee: true },
+      data: {
+        defaultPtFee,
+        // Undefined leaves the stored value alone; null clears it. A partial
+        // save must not wipe the accounts it did not mention.
+        ...(easypaisaAccount !== undefined && { easypaisaAccount }),
+        ...(jazzcashAccount !== undefined && { jazzcashAccount }),
+        ...(bankAccount !== undefined && { bankAccount }),
+      },
+      select: gymSettingsFields,
     });
 
-    // A price change is worth a trail — it silently alters what every future
-    // trainer assignment bills. `diff` keeps a no-op save out of the log.
-    const changed = diff(before, { defaultPtFee: after.defaultPtFee }, ['defaultPtFee']);
+    // Worth a trail: the fee silently alters what every future trainer
+    // assignment bills, and an account number is where the gym's money is told
+    // to go — changing it unnoticed is how takings end up in the wrong hands.
+    // `diff` keeps a no-op save out of the log.
+    const changed = diff(before, after, AUDITED_SETTINGS);
     if (changed) {
       await audit(req, {
         action: 'gym.settingsUpdate',

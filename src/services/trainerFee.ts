@@ -48,6 +48,19 @@ export interface PtFeeTerms {
   paid?: boolean;
   /** Who took it. Only meaningful when `paid`. */
   recordedById?: string;
+  /**
+   * How it was taken, when the member settled it on the spot.
+   *
+   * Defaults to cash, which is what this always used to assume. That
+   * assumption is wrong the moment a member pays the whole registration by
+   * wallet: the trainer fee would post as cash the gym never received, and the
+   * drawer would never balance. Only read when `paid` — a due has not been
+   * taken by any route yet.
+   */
+  method?: 'cash' | 'online';
+  /** Which wallet, when `method` is online. */
+  channel?: string | null;
+  reference?: string | null;
 }
 
 /**
@@ -76,12 +89,18 @@ export const buildPtFeeCharge = (
   const negotiated =
     terms.override != null && !amount.equals(trainer.ptFee ?? gym.defaultPtFee);
 
+  // An uncollected fee has no route yet, so it stays the default rather than
+  // inheriting a wallet the member has not paid through.
+  const method = terms.paid ? terms.method ?? 'cash' : 'cash';
+
   return {
     gymId,
     memberId,
     amount,
     status: terms.paid ? 'paid' : 'due',
-    method: 'cash',
+    method,
+    channel: method === 'cash' ? null : terms.channel ?? null,
+    reference: terms.paid ? terms.reference ?? null : null,
     type: 'other',
     // Attributed only when it was actually taken. A due has not been collected
     // by anyone yet, so naming whoever typed the form would misread as "this

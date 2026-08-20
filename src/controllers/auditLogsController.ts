@@ -1,5 +1,6 @@
 import type { Response } from 'express';
 import prisma from '../db.js';
+import { endOfDayUtc } from '../services/dates.js';
 import type { AuthedRequest } from '../types.js';
 import type { AuditLogQuery } from '../schemas.js';
 
@@ -16,8 +17,7 @@ export const getAll = async (
   const { entity, actorId, from, to, page, limit } = req.query;
   try {
     // `to` names a day, so include everything that happened during it.
-    const toEnd = to ? new Date(to) : undefined;
-    if (toEnd) toEnd.setHours(23, 59, 59, 999);
+    const toEnd = to ? endOfDayUtc(to) : undefined;
 
     const where = {
       gymId: req.gymId,

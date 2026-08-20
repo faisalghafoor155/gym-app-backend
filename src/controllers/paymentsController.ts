@@ -4,8 +4,10 @@ import type { Response } from "express";
 import { Prisma, MembershipStatus } from "@prisma/client";
 import prisma from "../db.js";
 import { audit, diff } from "../services/audit.js";
+import { endOfDayUtc } from "../services/dates.js";
 import { toView, withPlan } from "../services/membership.js";
 import { sum, withMoney } from "../services/money.js";
+import { channelLabel } from "../services/paymentChannel.js";
 import { hasPermission } from "../services/permissions.js";
 import type { AuthedRequest } from "../types.js";
 import type {
@@ -17,13 +19,6 @@ import type {
   IdParam,
 } from "../schemas.js";
 
-/** A date filter names a day, not an instant. Without this a payment taken at
- *  2pm falls outside a range that ends on its own date. */
-const endOfDay = (d: Date): Date => {
-  const end = new Date(d);
-  end.setHours(23, 59, 59, 999);
-  return end;
-};
 
 /**
  * What this request is allowed to see of the payments table.
@@ -71,7 +66,7 @@ export const getAll = async (
       ...((from || to) && {
         paymentDate: {
           ...(from && { gte: from }),
-          ...(to && { lte: endOfDay(to) }),
+          ...(to && { lte: endOfDayUtc(to) }),
         },
       }),
       // Staff search by whatever they have to hand — a name or a phone.
@@ -141,6 +136,8 @@ export const create = async (
     type,
     membershipId,
     paymentDate,
+    channel,
+    reference,
   } = req.body;
   try {
     const member = await prisma.member.findFirst({
@@ -171,6 +168,11 @@ export const create = async (
         gymId: req.gymId,
         amount,
         method: method ?? "cash",
+        // Cash has no channel. The schema rejects the contradiction outright;
+        // this drops it for the default-to-cash path, where no method was sent
+        // at all.
+        channel: (method ?? "cash") === "cash" ? null : channel ?? null,
+        reference: reference ?? null,
         notes,
         status: status ?? "paid",
         type: type ?? "membership",
@@ -195,6 +197,7 @@ export const create = async (
         memberId,
         amount: payment.amount.toNumber(),
         method: payment.method,
+        channel: payment.channel,
         status: payment.status,
         type: payment.type,
         membershipId: payment.membershipId,
@@ -218,8 +221,17 @@ export const update = async (
   res: Response,
 ): Promise<void> => {
   const { id } = req.params;
-  const { amount, method, notes, status, type, membershipId, paymentDate } =
-    req.body;
+  const {
+    amount,
+    method,
+    notes,
+    status,
+    type,
+    membershipId,
+    paymentDate,
+    channel,
+    reference,
+  } = req.body;
   try {
     const existing = await prisma.payment.findFirst({
       where: { id, gymId: req.gymId },
@@ -262,6 +274,14 @@ export const update = async (
         }),
         ...(notes !== undefined && { notes }),
         ...(paymentDate && { paymentDate }),
+        // Correcting an online payment to cash has to take the wallet's name
+        // off it too, or the row keeps claiming money arrived by a route it
+        // did not. Set explicitly rather than merged, so the correction is
+        // complete.
+        ...(method === "cash"
+          ? { channel: null }
+          : channel !== undefined && { channel: channel ?? null }),
+        ...(reference !== undefined && { reference: reference ?? null }),
       },
       include: {
         member: { select: { name: true, phone: true, memberNo: true } },
@@ -275,6 +295,8 @@ export const update = async (
     const changed = diff(existing, payment, [
       "amount",
       "method",
+      "channel",
+      "reference",
       "status",
       "type",
       "membershipId",
@@ -676,6 +698,7 @@ export const getMonthlyCollection = async (
       id: string;
       amount: number;
       method: string;
+      channel: string | null;
       status: string;
       type: string;
       notes: string | null;
@@ -724,6 +747,7 @@ export const getMonthlyCollection = async (
         id: p.id,
         amount: p.amount.toNumber(),
         method: p.method,
+        channel: p.channel,
         status: p.status,
         type: p.type,
         notes: p.notes,
@@ -856,7 +880,7 @@ export const exportCsv = async (
       ...((from || to) && {
         paymentDate: {
           ...(from && { gte: from }),
-          ...(to && { lte: endOfDay(to) }),
+          ...(to && { lte: endOfDayUtc(to) }),
         },
       }),
       // Staff search by whatever they have to hand — a name or a phone.
@@ -894,6 +918,10 @@ export const exportCsv = async (
       "Amount",
       "For",
       "Method",
+      // The point of recording a channel: an export is what gets checked
+      // against the wallet's own statement.
+      "Channel",
+      "Reference",
       "Status",
       "Date",
       "Notes",
@@ -916,6 +944,8 @@ export const exportCsv = async (
       p.amount.toString(),
       paymentTypeLabels[p.type] || p.type,
       p.method || "",
+      channelLabel(p.channel),
+      p.reference ?? "",
       p.status,
       new Date(p.paymentDate).toLocaleDateString(),
       p.notes ?? "",

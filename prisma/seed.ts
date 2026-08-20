@@ -38,6 +38,18 @@ const rand = (): number => {
 const pick = <T>(xs: readonly T[]): T => xs[Math.floor(rand() * xs.length)]!;
 const between = (lo: number, hi: number): number => Math.floor(rand() * (hi - lo + 1)) + lo;
 
+/**
+ * How a seeded payment was taken, cash or wallet.
+ *
+ * Kept together so the pair is always consistent: a cash row with a channel is
+ * a contradiction the API refuses, and seeded data that contains one would
+ * have the books disagreeing with the rules that produced them.
+ */
+const takenBy = (cashChance: number): { method: string; channel: string | null } =>
+  rand() > cashChance
+    ? { method: 'cash', channel: null }
+    : { method: 'online', channel: pick(['easypaisa', 'jazzcash', 'bank'] as const) };
+
 const daysAgo = (n: number): Date => {
   const d = new Date();
   d.setDate(d.getDate() - n);
@@ -255,6 +267,17 @@ async function main(): Promise<void> {
   if (gym.defaultPtFee.equals(0)) {
     await prisma.gym.update({ where: { id: gym.id }, data: { defaultPtFee: 10000 } });
   }
+  // The accounts the front desk reads out when a member pays online. Seeded so
+  // the channel picker has something to show rather than an empty hint.
+  await prisma.gym.update({
+    where: { id: gym.id },
+    data: {
+      easypaisaAccount: gym.easypaisaAccount ?? '0300-1234567',
+      jazzcashAccount: gym.jazzcashAccount ?? '0301-7654321',
+      bankAccount:
+        gym.bankAccount ?? 'Meezan Bank — Iron Works Gym — PK36MEZN0001234567890123',
+    },
+  });
   const gymDefaultPtFee = gym.defaultPtFee.equals(0) ? 10000 : gym.defaultPtFee.toNumber();
 
   // --- trainers ---------------------------------------------------------
@@ -443,7 +466,6 @@ async function main(): Promise<void> {
           planId: plan.id,
           startDate: start,
           expiryDate: expiry,
-          originalExpiryDate: expiry,
           pricePaid: plan.price,
           status,
         },
@@ -459,7 +481,7 @@ async function main(): Promise<void> {
           membershipId: membership.id,
           type: 'membership',
           amount: plan.price,
-          method: rand() > 0.3 ? 'cash' : 'online',
+          ...takenBy(0.3),
           status: 'paid',
           paymentDate: start,
           notes: `${plan.name} membership`,
@@ -540,7 +562,7 @@ async function main(): Promise<void> {
               memberId: member.id,
               type: 'supplement',
               amount: total,
-              method: rand() > 0.4 ? 'cash' : 'online',
+              ...takenBy(0.4),
               status: 'paid',
               paymentDate: soldOn,
               notes: `Purchased ${item.name}${qty > 1 ? ` x${qty}` : ''}`,

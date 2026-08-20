@@ -36,6 +36,15 @@ const date = z.coerce.date({ error: "must be a valid date" });
 
 export const GENDERS = ["male", "female", "other"] as const;
 export const PAYMENT_METHODS = ["cash", "online"] as const;
+
+/**
+ * Where an online payment actually came through.
+ *
+ * Only meaningful alongside `method: "online"` — cash has no channel, and
+ * saying otherwise on a cash row would put a wallet's name on money that was
+ * handed over the counter.
+ */
+export const PAYMENT_CHANNELS = ["easypaisa", "jazzcash", "bank"] as const;
 export const PAYMENT_STATUSES = ["paid", "due"] as const;
 export const PAYMENT_TYPES = ["membership", "supplement", "other"] as const;
 export const SUPPLEMENT_CATEGORIES = [
@@ -236,8 +245,36 @@ export const createMemberSchema = z
     ...memberBase,
     planId: uuid.optional(),
     startDate: date.optional(),
+    /**
+     * The joining fee taken at the counter, if any was.
+     *
+     * Absent means no money changed hands — the member is registered and can
+     * be billed later from the Payments page. A zero is not a payment either:
+     * a nil receipt is not a receipt.
+     */
+    feeAmount: z
+      .literal("")
+      .transform(() => null)
+      .or(money)
+      .nullish(),
+    /** How that fee was taken. Only read when `feeAmount` is set. */
+    feeMethod: z
+      .enum(PAYMENT_METHODS, { error: "must be cash or online" })
+      .optional(),
+    feeChannel: z
+      .enum(PAYMENT_CHANNELS, { error: "is not a payment channel we take" })
+      .or(blankToUndefined)
+      .nullish(),
+    feeReference: optionalText(100),
   })
   .superRefine((data, ctx) => {
+    if (data.feeMethod === "cash" && data.feeChannel) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["feeChannel"],
+        message: "cannot be set on a cash payment",
+      });
+    }
     if (data.startDate && !data.planId) {
       ctx.addIssue({
         code: "custom",
@@ -274,6 +311,18 @@ export const memberQuerySchema = z.object({
     .enum(MEMBER_STATUS_FILTERS, { error: "is not a valid status filter" })
     .or(blankToUndefined)
     .optional(),
+  /**
+   * Narrows the roster to one gender — what a gym needs to work through the
+   * women's list on ladies' day, or count either side of the floor.
+   *
+   * Absent means everyone, including the members whose gender was never
+   * recorded. Those are the majority of older rows, so a filter that dropped
+   * them by default would hide most of the gym.
+   */
+  gender: z
+    .enum(GENDERS, { error: "must be male, female or other" })
+    .or(blankToUndefined)
+    .optional(),
   page: z.coerce.number().int().min(1).default(1),
   // Capped at 100 like the audit log: the ceiling is what stops a caller
   // asking for the whole table back through the page parameter.
@@ -297,6 +346,30 @@ export const memberQuerySchema = z.object({
 export const updateMemberSchema = z.object({
   ...memberBase,
   name: name.optional(),
+});
+
+/**
+ * What the add-member form asks before it has a whole member to send.
+ *
+ * Everything is optional: the form asks as soon as it has the phone, and again
+ * once the name and date of birth are both filled. `excludeId` is what an edit
+ * passes so the member being edited is not reported as its own duplicate.
+ */
+export const memberDuplicateQuerySchema = z.object({
+  name: z
+    .string()
+    .trim()
+    .max(100, "is too long")
+    .transform((v) => v || undefined)
+    .optional(),
+  phone: z
+    .string()
+    .trim()
+    .max(30, "is too long")
+    .transform((v) => v || undefined)
+    .optional(),
+  dateOfBirth: date.or(blankToUndefined).optional(),
+  excludeId: uuid.or(blankToUndefined).optional(),
 });
 
 export const updateMyProfileSchema = z.object({
@@ -354,20 +427,59 @@ export const createMembershipSchema = z.object({
   startDate: date.optional(),
 });
 
+/** Which wallet the money came through, and its transaction id. Declared here
+ *  rather than with the payment schemas because renewal, which comes first in
+ *  this file, takes the money as well as selling the days. */
+const paymentChannelFields = {
+  channel: z
+    .enum(PAYMENT_CHANNELS, { error: "is not a payment channel we take" })
+    .or(blankToUndefined)
+    .nullish(),
+  reference: optionalText(100),
+};
+
 /**
- * Granting extra days. Only ever forwards — shortening an expiry is a
- * different action with different trust implications, and is not this route's
- * job. The reason is required because the audit entry is the entire point:
- * free days are money, and money given away needs a why next to it.
+ * A cash payment must not claim a channel.
+ *
+ * Otherwise a row reads "cash, via JazzCash", which is two different answers
+ * to where the money is — and the one the books would reconcile against is
+ * whichever the reader happened to look at.
  */
-export const extendMembershipSchema = z.object({
-  days: z.coerce
-    .number({ error: "must be a number" })
-    .int("must be a whole number")
-    .min(1, "must be at least 1 day")
-    .max(365, "cannot be more than 365 days"),
-  reason: z.string().trim().min(3, "is required").max(200, "is too long"),
-});
+const rejectChannelOnCash = (
+  data: { method?: string; channel?: string | null },
+  ctx: z.RefinementCtx,
+): void => {
+  if (data.method === "cash" && data.channel) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["channel"],
+      message: "cannot be set on a cash payment",
+    });
+  }
+};
+
+/**
+ * Renewing: the next period, and the money for it, in one request.
+ *
+ * The amount is required and must be positive — a renewal is the gym being
+ * paid, and one recorded without a payment would grant days the books never
+ * saw. Discounts are expressed by sending a smaller amount than the plan's
+ * price, which is why this is a free figure rather than taken from the plan.
+ *
+ * `planId` is optional: absent means "the same plan again", which is the
+ * common case. Sending one renews onto a different plan.
+ *
+ * No start date. It follows from the membership being renewed — the day after
+ * it ends — so it cannot be typed, for the same reason an expiry cannot be.
+ */
+export const renewMembershipSchema = z
+  .object({
+    planId: uuid.optional(),
+    amount: money.refine((v) => v > 0, "must be greater than zero"),
+    method: z.enum(PAYMENT_METHODS, { error: "must be cash or online" }),
+    ...paymentChannelFields,
+  })
+  .superRefine(rejectChannelOnCash);
 
 // --- audit logs --------------------------------------------------------
 
@@ -444,39 +556,50 @@ export const identifyFingerprintSchema = z.object({
 
 // --- payments ----------------------------------------------------------
 
-export const createPaymentSchema = z.object({
-  memberId: uuid,
-  amount: money.refine((v) => v > 0, "must be greater than zero"),
-  method: z
-    .enum(PAYMENT_METHODS, { error: "must be cash or online" })
-    .optional(),
-  status: z.enum(PAYMENT_STATUSES, { error: "must be paid or due" }).optional(),
-  type: z
-    .enum(PAYMENT_TYPES, { error: "is not a valid payment type" })
-    .optional(),
-  // Which membership this settles. The controller checks it belongs to this
-  // gym and to the member being paid for; null is a legitimate answer for
-  // money that has no membership behind it.
-  membershipId: uuid.nullish(),
-  notes: optionalText(500),
-  paymentDate: date.optional(),
-});
+export const createPaymentSchema = z
+  .object({
+    memberId: uuid,
+    amount: money.refine((v) => v > 0, "must be greater than zero"),
+    method: z
+      .enum(PAYMENT_METHODS, { error: "must be cash or online" })
+      .optional(),
+    status: z
+      .enum(PAYMENT_STATUSES, { error: "must be paid or due" })
+      .optional(),
+    type: z
+      .enum(PAYMENT_TYPES, { error: "is not a valid payment type" })
+      .optional(),
+    // Which membership this settles. The controller checks it belongs to this
+    // gym and to the member being paid for; null is a legitimate answer for
+    // money that has no membership behind it.
+    membershipId: uuid.nullish(),
+    notes: optionalText(500),
+    paymentDate: date.optional(),
+    ...paymentChannelFields,
+  })
+  .superRefine(rejectChannelOnCash);
 
-export const updatePaymentSchema = z.object({
-  // The member a payment belongs to is deliberately not editable — moving money
-  // between members is a delete and a fresh entry, so both show in the trail.
-  amount: money.refine((v) => v > 0, "must be greater than zero").optional(),
-  method: z
-    .enum(PAYMENT_METHODS, { error: "must be cash or online" })
-    .optional(),
-  status: z.enum(PAYMENT_STATUSES, { error: "must be paid or due" }).optional(),
-  type: z
-    .enum(PAYMENT_TYPES, { error: "is not a valid payment type" })
-    .optional(),
-  membershipId: uuid.nullish(),
-  notes: optionalText(500),
-  paymentDate: date.optional(),
-});
+export const updatePaymentSchema = z
+  .object({
+    // The member a payment belongs to is deliberately not editable — moving
+    // money between members is a delete and a fresh entry, so both show in the
+    // trail.
+    amount: money.refine((v) => v > 0, "must be greater than zero").optional(),
+    method: z
+      .enum(PAYMENT_METHODS, { error: "must be cash or online" })
+      .optional(),
+    status: z
+      .enum(PAYMENT_STATUSES, { error: "must be paid or due" })
+      .optional(),
+    type: z
+      .enum(PAYMENT_TYPES, { error: "is not a valid payment type" })
+      .optional(),
+    membershipId: uuid.nullish(),
+    notes: optionalText(500),
+    paymentDate: date.optional(),
+    ...paymentChannelFields,
+  })
+  .superRefine(rejectChannelOnCash);
 
 export const paymentQuerySchema = z
   .object({
@@ -769,6 +892,14 @@ export const updateGymSettingsSchema = z.object({
   /** What a trainer assignment costs when the trainer sets no price of their
    *  own. Zero is valid and means the gym charges nothing for it. */
   defaultPtFee: money,
+  /**
+   * Where members are told to send money. Free text, because a wallet is a
+   * phone number and a bank is a name plus an IBAN. Blank clears the channel's
+   * published details without hiding the channel itself.
+   */
+  easypaisaAccount: optionalText(200).optional(),
+  jazzcashAccount: optionalText(200).optional(),
+  bankAccount: optionalText(300).optional(),
 });
 
 // --- online payments ---------------------------------------------------
@@ -832,6 +963,7 @@ export type TransferOwnershipBody = z.infer<typeof transferOwnershipSchema>;
 export type CreateMemberBody = z.infer<typeof createMemberSchema>;
 export type UpdateMemberBody = z.infer<typeof updateMemberSchema>;
 export type MemberQuery = z.infer<typeof memberQuerySchema>;
+export type MemberDuplicateQuery = z.infer<typeof memberDuplicateQuerySchema>;
 export type MemberStatusFilter = (typeof MEMBER_STATUS_FILTERS)[number];
 export type CreateMembershipPlanBody = z.infer<
   typeof createMembershipPlanSchema
@@ -841,12 +973,13 @@ export type UpdateMembershipPlanBody = z.infer<
 >;
 export type MembershipPlanQuery = z.infer<typeof membershipPlanQuerySchema>;
 export type CreateMembershipBody = z.infer<typeof createMembershipSchema>;
-export type ExtendMembershipBody = z.infer<typeof extendMembershipSchema>;
+export type RenewMembershipBody = z.infer<typeof renewMembershipSchema>;
 export type MembershipParams = z.infer<typeof membershipParams>;
 export type AuditLogQuery = z.infer<typeof auditLogQuerySchema>;
 export type CheckinBody = z.infer<typeof checkinSchema>;
 export type EnrollFingerprintBody = z.infer<typeof enrollFingerprintSchema>;
 export type IdentifyFingerprintBody = z.infer<typeof identifyFingerprintSchema>;
+export type PaymentChannel = (typeof PAYMENT_CHANNELS)[number];
 export type CreatePaymentBody = z.infer<typeof createPaymentSchema>;
 export type UpdatePaymentBody = z.infer<typeof updatePaymentSchema>;
 export type PaymentQuery = z.infer<typeof paymentQuerySchema>;

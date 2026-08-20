@@ -12,24 +12,24 @@ import {
   createMemberSchema,
   updateMemberSchema,
   memberQuerySchema,
+  memberDuplicateQuerySchema,
   importMembersSchema,
   createMembershipSchema,
-  extendMembershipSchema,
+  renewMembershipSchema,
 } from "../schemas.js";
 import {
   getAll,
   getOne,
   create,
   update,
+  checkDuplicate,
   importMembers,
   remove,
 } from "../controllers/membersController.js";
 import {
   getHistory as getMembershipHistory,
   create as createMembership,
-  extend as extendMembership,
-  freeze as freezeMembership,
-  resume as resumeMembership,
+  renew as renewMembership,
 } from "../controllers/membershipsController.js";
 
 const router = Router();
@@ -49,6 +49,13 @@ router.post(
   requirePermission("canManageMembers"),
   validate(createMemberSchema),
   authed(create),
+);
+// Ahead of `/:id`, which would otherwise match "check-duplicate" and send it
+// to getOne as a member id.
+router.get(
+  "/check-duplicate",
+  validate(memberDuplicateQuerySchema, "query"),
+  authed(checkDuplicate),
 );
 router.get("/:id", validate(idParam, "params"), authed(getOne));
 router.put(
@@ -80,30 +87,14 @@ router.post(
   authed(createMembership),
 );
 
-// Owner-only, unlike everything else on this router: granting free days is
-// spending the gym's money, so it sits with payments and staff accounts rather
-// than with day-to-day front-desk work. The router-level requireStaff is not
-// enough on its own, hence the second guard here.
+// Front-desk work, not owner-only: renewing is taking money the member owes
+// and selling them the next period, which is exactly what the desk is for.
 router.post(
-  "/:id/memberships/:membershipId/extend",
-  requireOwner,
-  validate(membershipParams, "params"),
-  validate(extendMembershipSchema),
-  authed(extendMembership),
-);
-
-router.post(
-  "/:id/memberships/:membershipId/freeze",
+  "/:id/memberships/:membershipId/renew",
   requirePermission("canManageMemberships"),
   validate(membershipParams, "params"),
-  authed(freezeMembership),
-);
-
-router.post(
-  "/:id/memberships/:membershipId/resume",
-  requirePermission("canManageMemberships"),
-  validate(membershipParams, "params"),
-  authed(resumeMembership),
+  validate(renewMembershipSchema),
+  authed(renewMembership),
 );
 
 export default router;

@@ -127,9 +127,23 @@ export const addUser = async (
 /** A member record, with the gym's member counter kept consistent. */
 export const addMember = async (
   gymId: string,
-  opts: { name?: string; phone?: string; status?: string } = {},
+  opts: {
+    name?: string;
+    phone?: string;
+    status?: string;
+    dateOfBirth?: Date | null;
+    gender?: string | null;
+  } = {},
 ): Promise<{ id: string; name: string }> => {
-  const { name = 'Test Member', phone = '03001234567', status = 'active' } = opts;
+  const {
+    name = 'Test Member',
+    phone = '03001234567',
+    status = 'active',
+    dateOfBirth = null,
+    // Left unset by default, like most real rows — the gender filter has to
+    // cope with a roster that mostly never recorded one.
+    gender = null,
+  } = opts;
   const gym = await prisma.gym.update({
     where: { id: gymId },
     data: { memberSeq: { increment: 1 } },
@@ -141,6 +155,8 @@ export const addMember = async (
       name,
       phone,
       status,
+      dateOfBirth,
+      gender,
       memberNo: `MEM-${String(gym.memberSeq).padStart(5, '0')}`,
     },
     select: { id: true, name: true },
@@ -182,7 +198,6 @@ export const addMembership = async (
       planId,
       startDate: start,
       expiryDate: expiry,
-      originalExpiryDate: expiry,
       pricePaid: 2500,
       status,
     },

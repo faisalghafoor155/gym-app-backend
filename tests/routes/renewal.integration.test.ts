@@ -35,7 +35,6 @@ const memberDueForRenewal = async (
       planId: plan.id,
       startDate: addDays(expiryDate, -plan.durationDays),
       expiryDate,
-      originalExpiryDate: expiryDate,
       pricePaid: price,
       status: 'active',
     },

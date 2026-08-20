@@ -32,7 +32,6 @@ const withExpiredMembership = async (
       planId: plan.id,
       startDate: addDays(expiryDate, -plan.durationDays),
       expiryDate,
-      originalExpiryDate: expiryDate,
       pricePaid: price,
       status: 'active',
     },
@@ -186,7 +185,7 @@ describe('GET /api/payments/due', () => {
     await prisma.membership.create({
       data: {
         gymId: owner.gymId, memberId: member.id, planId: plan.id,
-        startDate: new Date(), expiryDate, originalExpiryDate: expiryDate,
+        startDate: new Date(), expiryDate,
         pricePaid: plan.price, status: 'active',
       },
     });
