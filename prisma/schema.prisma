@@ -224,6 +224,18 @@ model Member {
   address          String?
   emergencyContact String?
 
+  /// Set when the member has asked not to be messaged on WhatsApp.
+  ///
+  /// Opt-out rather than opt-in: the messages this sends are the ones a member
+  /// joined a gym expecting — their membership is ending, their payment was
+  /// received — and requiring consent before telling somebody their own
+  /// receipt would leave most of a roster uninformed. A member who says stop
+  /// is honoured immediately, which is both Meta's rule and the point.
+  ///
+  /// Only WhatsApp. Email is unaffected, so opting out of one is not silently
+  /// opting out of both.
+  whatsappOptOut Boolean @default(false)
+
   status    String   @default("active")
   createdAt DateTime @default(now())
 
@@ -527,6 +539,19 @@ model AuditLog {
 enum ReminderKind {
   /// Sent to the member on the day their membership runs out.
   membershipExpiry
+  /// Sent a few days before, while renewing is still ahead of the member
+  /// rather than behind them.
+  membershipExpiringSoon
+}
+
+/// How a reminder was delivered.
+///
+/// Part of the idempotency key rather than a label on it: a member with both
+/// an address and a number should get the notice both ways, and one transport
+/// being down must not mark the other as already done.
+enum ReminderChannel {
+  email
+  whatsapp
 }
 
 /// One reminder that has been sent, so it is never sent twice.
@@ -547,6 +572,10 @@ model ReminderLog {
   membershipId String
   kind         ReminderKind
 
+  /// Which transport carried it. Defaults to email so the rows written before
+  /// WhatsApp existed keep meaning what they meant when they were written.
+  channel ReminderChannel @default(email)
+
   /// The day the reminder was for, not the moment it went out. A job that runs
   /// twice on the same day must collide; one that runs the next day must not.
   sentOn DateTime @db.Date
@@ -557,7 +586,7 @@ model ReminderLog {
 
   createdAt DateTime @default(now())
 
-  @@unique([membershipId, kind, sentOn])
+  @@unique([membershipId, kind, channel, sentOn])
   @@index([gymId, sentOn])
 }
 

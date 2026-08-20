@@ -346,6 +346,14 @@ export const memberQuerySchema = z.object({
 export const updateMemberSchema = z.object({
   ...memberBase,
   name: name.optional(),
+  /**
+   * Set when the member asks not to be messaged on WhatsApp.
+   *
+   * Only on update, never on create: nobody opts out before they have been
+   * registered, and a box on the registration form invites a receptionist to
+   * answer it on the member's behalf.
+   */
+  whatsappOptOut: z.boolean().optional(),
 });
 
 /**

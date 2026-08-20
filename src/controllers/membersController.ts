@@ -28,6 +28,7 @@ import {
   type DuplicateHit,
 } from "../services/memberDuplicate.js";
 import { buildPtFeeCharge, trainerFeeSelect } from "../services/trainerFee.js";
+import { notifyWelcome } from "../services/memberNotifications.js";
 import type { AuthedRequest } from "../types.js";
 import type {
   CreateMemberBody,
@@ -52,6 +53,7 @@ const memberFields = {
   dateOfBirth: true,
   address: true,
   emergencyContact: true,
+  whatsappOptOut: true,
   status: true,
   createdAt: true,
   trainerId: true,
@@ -478,6 +480,13 @@ export const create = async (
       after: { ...member, membership: view.currentMembership },
     });
 
+    // Not awaited, and its failure is swallowed inside: registering somebody
+    // must not depend on Meta being reachable, and the desk is standing in
+    // front of the member either way. The member number is the payload that
+    // matters — it is what they will be asked for, and this is their only
+    // copy of it.
+    void notifyWelcome(req.gymId, full);
+
     res.status(201).json(view);
   } catch (err) {
     if (err instanceof DuplicateMemberError) {
@@ -499,6 +508,10 @@ const AUDITED_MEMBER_FIELDS = [
   "dateOfBirth",
   "address",
   "emergencyContact",
+  // A member's stated wish about being messaged. Worth a row of its own: if
+  // somebody is later messaged after opting out, the question is who changed
+  // it back and when.
+  "whatsappOptOut",
   "status",
 ] as const;
 
@@ -516,6 +529,7 @@ export const update = async (
     dateOfBirth,
     address,
     emergencyContact,
+    whatsappOptOut,
     trainerId,
     ptFee,
     ptFeePaid,
@@ -622,6 +636,7 @@ export const update = async (
           ...(dateOfBirth !== undefined && { dateOfBirth }),
           ...(address !== undefined && { address }),
           ...(emergencyContact !== undefined && { emergencyContact }),
+          ...(whatsappOptOut !== undefined && { whatsappOptOut }),
           ...(trainerId !== undefined && { trainerId }),
         },
       });

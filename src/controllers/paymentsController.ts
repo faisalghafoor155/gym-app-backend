@@ -9,6 +9,7 @@ import { toView, withPlan } from "../services/membership.js";
 import { sum, withMoney } from "../services/money.js";
 import { channelLabel } from "../services/paymentChannel.js";
 import { hasPermission } from "../services/permissions.js";
+import { notifyPaymentReceipt } from "../services/memberNotifications.js";
 import type { AuthedRequest } from "../types.js";
 import type {
   CreatePaymentBody,
@@ -183,7 +184,12 @@ export const create = async (
         ...(paymentDate && { paymentDate }),
       },
       include: {
-        member: { select: { name: true, phone: true, memberNo: true } },
+        member: {
+          select: {
+            name: true, phone: true, memberNo: true, whatsappOptOut: true,
+          },
+        },
+        membership: { select: { plan: { select: { name: true } } } },
         recordedBy: { select: { id: true, name: true } },
       },
     });
@@ -204,6 +210,23 @@ export const create = async (
         paymentDate: payment.paymentDate,
       },
     });
+
+    // Only for money actually taken. A `due` row records what is owed, and a
+    // receipt for it would tell the member they had paid something they have
+    // not.
+    if (payment.status === "paid") {
+      // Not awaited: the payment is recorded either way, and the desk should
+      // not wait on Meta to hand back the change.
+      void notifyPaymentReceipt(
+        req.gymId,
+        payment.member,
+        payment.amount.toString(),
+        // What they bought, in their own terms. The plan name when there is
+        // one, and the payment's own kind when there is not — a supplement
+        // sale or a registration fee has no membership to name.
+        payment.membership?.plan.name ?? payment.type,
+      );
+    }
 
     res.status(201).json(withMoney(payment, "amount"));
   } catch (err) {

@@ -4,6 +4,7 @@ import prisma from '../../src/db.js';
 import { addMember, addMembership, addPlan, makeGym, resetDb } from '../helpers.js';
 import { runExpiryReminders } from '../../src/jobs/expiryReminders.js';
 import * as mail from '../../src/services/mail.js';
+import * as whatsapp from '../../src/services/whatsapp.js';
 
 /**
  * The daily expiry reminder.
@@ -315,5 +316,195 @@ describe('expiry reminders — the clock', () => {
 
     expect(run.sent).toBe(1);
     expect(send).toHaveBeenCalledOnce();
+  });
+});
+
+/**
+ * The same notice, over WhatsApp.
+ *
+ * Added because in Pakistan the email is rarely opened and the WhatsApp almost
+ * always is. The property that matters is that the two transports are
+ * genuinely independent: a member with both should hear twice, and one being
+ * down must not mark the other as handled. That independence lives in the
+ * unique constraint, which now carries the channel, so most of what follows is
+ * about the claim rather than about the message.
+ */
+describe('expiry reminders — over WhatsApp', () => {
+  /** Stubs WhatsApp as configured and delivering. */
+  const stubWhatsApp = (result: 'sent' | 'skipped' | 'failed' = 'sent') => {
+    vi.spyOn(whatsapp, 'whatsappEnabled', 'get').mockReturnValue(true);
+    return vi.spyOn(whatsapp, 'sendWhatsApp').mockResolvedValue(result);
+  };
+
+  it('tells a member both ways when they have an address and a number', async () => {
+    const mail = stubMail();
+    const wa = stubWhatsApp();
+    await gymWithExpiringMember();
+
+    const run = await runExpiryReminders();
+
+    // Both, not either. The whole point of adding this transport is that the
+    // email may well go unread.
+    expect(run).toMatchObject({ sent: 1, sentWhatsApp: 1, failed: 0 });
+    expect(mail).toHaveBeenCalledOnce();
+    expect(wa).toHaveBeenCalledOnce();
+  });
+
+  it('still sends the WhatsApp when the member has no email', async () => {
+    stubMail();
+    const wa = stubWhatsApp();
+    await gymWithExpiringMember({ email: null });
+
+    const run = await runExpiryReminders();
+
+    // A member reachable one way is not unreachable. The missing address is
+    // counted, and the number is used regardless.
+    expect(run).toMatchObject({ skippedNoEmail: 1, sentWhatsApp: 1 });
+    expect(wa).toHaveBeenCalledOnce();
+  });
+
+  it('sends nothing on WhatsApp to a member who opted out', async () => {
+    const mail = stubMail();
+    const wa = stubWhatsApp();
+    const { member } = await gymWithExpiringMember();
+    await prisma.member.update({
+      where: { id: member.id },
+      data: { whatsappOptOut: true },
+    });
+
+    const run = await runExpiryReminders();
+
+    expect(run).toMatchObject({ sentWhatsApp: 0, skippedNoWhatsApp: 1 });
+    expect(wa).not.toHaveBeenCalled();
+    // Opting out of one is not opting out of both.
+    expect(mail).toHaveBeenCalledOnce();
+  });
+
+  it('skips a member whose number cannot receive WhatsApp', async () => {
+    stubMail();
+    const wa = stubWhatsApp();
+    const { member } = await gymWithExpiringMember();
+    // A landline, which gyms do record.
+    await prisma.member.update({
+      where: { id: member.id },
+      data: { phone: '042-35881234' },
+    });
+
+    const run = await runExpiryReminders();
+
+    expect(run).toMatchObject({ sentWhatsApp: 0, skippedNoWhatsApp: 1, failed: 0 });
+    expect(wa).not.toHaveBeenCalled();
+  });
+
+  it('does not send the WhatsApp twice when the job runs twice', async () => {
+    stubMail();
+    const wa = stubWhatsApp();
+    await gymWithExpiringMember();
+
+    await runExpiryReminders();
+    const second = await runExpiryReminders();
+
+    expect(second.sentWhatsApp).toBe(0);
+    expect(wa).toHaveBeenCalledOnce();
+  });
+
+  it('claims the two channels separately, so one failing does not block the other', async () => {
+    // Mail is configured and refusing; WhatsApp is fine.
+    vi.spyOn(mail, 'mailEnabled', 'get').mockReturnValue(true);
+    vi.spyOn(mail, 'sendMail').mockResolvedValue(false);
+    const wa = stubWhatsApp();
+    await gymWithExpiringMember();
+
+    const run = await runExpiryReminders();
+
+    // The WhatsApp went out even though the mail did not.
+    expect(run).toMatchObject({ sent: 0, failed: 1, sentWhatsApp: 1 });
+    expect(wa).toHaveBeenCalledOnce();
+
+    // And the failed mail gave its claim back, so tomorrow retries it —
+    // while the delivered WhatsApp kept its own.
+    const rows = await prisma.reminderLog.findMany({ select: { channel: true } });
+    expect(rows.map(r => r.channel)).toEqual(['whatsapp']);
+  });
+
+  it('does nothing about WhatsApp when it is not configured', async () => {
+    const mail = stubMail();
+    const wa = vi.spyOn(whatsapp, 'sendWhatsApp');
+    vi.spyOn(whatsapp, 'whatsappEnabled', 'get').mockReturnValue(false);
+    await gymWithExpiringMember();
+
+    const run = await runExpiryReminders();
+
+    // A gym that has not set WhatsApp up is not failing to send. Counting it
+    // as a failure would report a problem that does not exist.
+    expect(run).toMatchObject({ sent: 1, failed: 0, sentWhatsApp: 0, skippedNoWhatsApp: 0 });
+    expect(wa).not.toHaveBeenCalled();
+    expect(mail).toHaveBeenCalledOnce();
+  });
+});
+
+/**
+ * The early warning, a few days out.
+ *
+ * Sent while renewing is still ahead of the member rather than behind them —
+ * a notice on the day itself arrives when the lapse has already happened.
+ */
+describe('expiry reminders — the early warning', () => {
+  it('warns a member whose membership ends in three days', async () => {
+    const send = stubMail();
+    const gym = await makeGym({ gymName: 'Iron House' });
+    const member = await addMember(gym.gymId, { name: 'Ali Khan' });
+    await prisma.member.update({
+      where: { id: member.id },
+      data: { email: 'member@example.com' },
+    });
+    const plan = await addPlan(gym.gymId, { name: 'Monthly' });
+    await addMembership(gym.gymId, member.id, { planId: plan.id, expiresInDays: 3 });
+
+    const run = await runExpiryReminders();
+
+    // Nothing expires today, so the day-of pass finds nobody.
+    expect(run).toMatchObject({ due: 0, dueSoon: 1, sent: 1 });
+    expect(send).toHaveBeenCalledOnce();
+  });
+
+  it('leaves a member alone who is neither expiring today nor soon', async () => {
+    const send = stubMail();
+    const gym = await makeGym();
+    const member = await addMember(gym.gymId);
+    await prisma.member.update({
+      where: { id: member.id },
+      data: { email: 'member@example.com' },
+    });
+    await addMembership(gym.gymId, member.id, { expiresInDays: 20 });
+
+    const run = await runExpiryReminders();
+
+    expect(run).toMatchObject({ due: 0, dueSoon: 0, sent: 0 });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('warns and then tells, without either counting as a repeat', async () => {
+    const send = stubMail();
+    const gym = await makeGym();
+    const member = await addMember(gym.gymId);
+    await prisma.member.update({
+      where: { id: member.id },
+      data: { email: 'member@example.com' },
+    });
+    await addMembership(gym.gymId, member.id, { planId: undefined, expiresInDays: 3 });
+
+    // Three days out: the warning.
+    const warned = await runExpiryReminders();
+    expect(warned).toMatchObject({ dueSoon: 1, sent: 1 });
+
+    // Three days later, the same membership expires. A different kind of
+    // notice, so the claim from the warning must not suppress it.
+    const later = new Date();
+    later.setDate(later.getDate() + 3);
+    const told = await runExpiryReminders(later);
+
+    expect(told).toMatchObject({ due: 1, sent: 1, skippedAlreadySent: 0 });
+    expect(send).toHaveBeenCalledTimes(2);
   });
 });
