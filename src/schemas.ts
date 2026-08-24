@@ -642,9 +642,42 @@ export const paymentQuerySchema = z
 
 // --- plans -------------------------------------------------------------
 
+export const workoutExerciseSchema = z.object({
+  name: z.string().trim().min(1, "is required"),
+  sets: z.coerce.number().int().min(1),
+  reps: z.string().trim().min(1),
+  weight: z.string().trim(),
+});
+
+export const dailyWorkoutSchema = z.object({
+  day: z.string().trim().min(1),
+  exercises: z.array(workoutExerciseSchema),
+});
+
+export const workoutDataSchema = z.object({
+  days: z.array(dailyWorkoutSchema),
+});
+
+export const dietItemSchema = z.object({
+  name: z.string().trim().min(1, "is required"),
+  amount: z.string().trim().min(1),
+  calories: z.coerce.number().int().min(0),
+});
+
+export const dietMealSchema = z.object({
+  name: z.string().trim().min(1),
+  items: z.array(dietItemSchema),
+});
+
+export const dietDataSchema = z.object({
+  meals: z.array(dietMealSchema),
+});
+
 export const createPlanSchema = z.object({
   name,
   description: optionalText(2000),
+  workoutData: workoutDataSchema.optional(),
+  dietData: dietDataSchema.optional(),
 });
 
 export const assignPlanSchema = z.object({
@@ -652,6 +685,9 @@ export const assignPlanSchema = z.object({
   workoutPlanId: uuid.nullish(),
   dietPlanId: uuid.nullish(),
 });
+
+export const trainerIdParam = z.object({ trainerId: uuid });
+
 
 // --- supplements -------------------------------------------------------
 
@@ -1004,6 +1040,7 @@ export type CheckoutCartBody = z.infer<typeof checkoutCartSchema>;
 export type RestockSupplementBody = z.infer<typeof restockSupplementSchema>;
 export type SalesReportQuery = z.infer<typeof salesReportQuerySchema>;
 export type IdParam = z.infer<typeof idParam>;
+export type TrainerIdParam = z.infer<typeof trainerIdParam>;
 
 export type CreateTrainerBody = z.infer<typeof createTrainerSchema>;
 export type UpdateTrainerBody = z.infer<typeof updateTrainerSchema>;

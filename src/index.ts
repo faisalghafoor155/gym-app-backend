@@ -27,6 +27,8 @@ import classBookingsRoutes from "./routes/classBookings.js";
 import onlinePaymentsRoutes from "./routes/onlinePayments.js";
 import gymSettingsRoutes from "./routes/gymSettings.js";
 import expensesRoutes from "./routes/expenses.js";
+import analyticsRoutes from "./routes/analytics.js";
+import payoutsRoutes from "./routes/payouts.js";
 import { hasLiveGateway } from "./services/gateways/index.js";
 import { startJobs } from "./jobs/index.js";
 
@@ -167,6 +169,8 @@ app.use("/api/class-bookings", classBookingsRoutes);
 app.use("/api/online-payments", onlinePaymentsRoutes);
 app.use("/api/gym-settings", gymSettingsRoutes);
 app.use("/api/expenses", expensesRoutes);
+app.use("/api/analytics", analyticsRoutes);
+app.use("/api/payouts", payoutsRoutes);
 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });

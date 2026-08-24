@@ -3,6 +3,7 @@ import prisma from '../db.js';
 import { audit } from '../services/audit.js';
 import type { AuthedRequest } from '../types.js';
 import type { CreatePtSessionBody, UpdatePtSessionBody, IdParam } from '../schemas.js';
+import { sum } from '../services/money.js';
 
 /**
  * Returns list of PT sessions.
@@ -247,8 +248,9 @@ export const getCommissionsReport = async (
 
     const report = trainers.map(t => {
       const totalSessions = t.ptSessions.length;
-      const totalRevenue = t.ptSessions.reduce((acc, curr) => acc + Number(curr.priceCharged), 0);
-      const totalCommission = t.ptSessions.reduce((acc, curr) => acc + Number(curr.trainerCommission), 0);
+      const totalRevenue = sum(t.ptSessions.map(curr => curr.priceCharged));
+      const totalCommission = sum(t.ptSessions.map(curr => curr.trainerCommission));
+
 
       return {
         trainerId: t.id,

@@ -20,10 +20,10 @@ export const createWorkoutPlan = async (
   req: AuthedRequest<Record<string, string>, unknown, CreatePlanBody>,
   res: Response,
 ): Promise<void> => {
-  const { name, description } = req.body;
+  const { name, description, workoutData } = req.body;
   try {
     const plan = await prisma.workoutPlan.create({
-      data: { gymId: req.gymId, name, description },
+      data: { gymId: req.gymId, name, description, workoutData },
     });
     res.status(201).json(plan);
   } catch (err) {
@@ -49,10 +49,10 @@ export const createDietPlan = async (
   req: AuthedRequest<Record<string, string>, unknown, CreatePlanBody>,
   res: Response,
 ): Promise<void> => {
-  const { name, description } = req.body;
+  const { name, description, dietData } = req.body;
   try {
     const plan = await prisma.dietPlan.create({
-      data: { gymId: req.gymId, name, description },
+      data: { gymId: req.gymId, name, description, dietData },
     });
     res.status(201).json(plan);
   } catch (err) {

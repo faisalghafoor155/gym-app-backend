@@ -98,6 +98,8 @@ export const STAFF_PERMISSIONS: Record<StaffPermission, PermissionRequirements> 
    *  is the front desk's job, not the bookkeeper's. */
   accountant: {
     ...NONE,
+    canCheckIn: true,
+    canViewAttendance: true,
     canManagePayments: true,
     canViewPayments: true,
     canRecordPayments: true,
@@ -147,17 +149,17 @@ export const getPermissionDescription = (permission: StaffPermission): string =>
   PERMISSION_DESCRIPTIONS[permission];
 
 export const PERMISSION_LABELS: Record<StaffPermission, string> = {
-  manager: "Manager",
+  manager: "Full Access",
   members_manager: "Members Manager",
-  accountant: "Accountant",
-  receptionist: "Receptionist",
+  accountant: "Account",
+  receptionist: "Attendance",
   inventory_manager: "Inventory Manager",
 };
 
 export const PERMISSION_DESCRIPTIONS: Record<StaffPermission, string> = {
   manager: "Full access to all features including staff management",
   members_manager: "Can manage members, memberships, and view payments",
-  accountant: "Can manage and view payments, expenses, and reports",
-  receptionist: "Can check in members and view attendance",
+  accountant: "Can check attendance, record payments (add fees), manage expenses, and view reports",
+  receptionist: "Can check in members, view attendance, and view classes/schedules",
   inventory_manager: "Can manage supplements, inventory, and sell items",
 };

@@ -457,6 +457,7 @@ model WorkoutPlan {
   gymId       String
   name        String
   description String?
+  workoutData Json?
   createdAt   DateTime @default(now())
 
   gym         Gym          @relation(fields: [gymId], references: [id])
@@ -470,6 +471,7 @@ model DietPlan {
   gymId       String
   name        String
   description String?
+  dietData    Json?
   createdAt   DateTime @default(now())
 
   gym         Gym          @relation(fields: [gymId], references: [id])
