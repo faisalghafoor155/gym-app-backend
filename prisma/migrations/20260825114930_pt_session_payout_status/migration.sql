@@ -1,0 +1,13 @@
+-- Splits "the member paid the gym" from "the gym paid the trainer".
+--
+-- These were one column, and taking a member's money at the counter marked the
+-- trainer's commission as already paid out. The payouts page therefore showed
+-- nothing owed for sessions nobody had actually been paid for.
+--
+-- Every existing row starts at 'unpaid'. That is deliberate rather than
+-- copying paymentStatus across: a session marked paid under the old meaning
+-- says the member paid, which is no evidence the trainer was. Starting at
+-- unpaid means a gym is shown commission it may have already settled by hand —
+-- an over-count it can correct by paying out once — rather than being told it
+-- owes nothing and quietly never paying.
+ALTER TABLE "PtSession" ADD COLUMN "payoutStatus" TEXT NOT NULL DEFAULT 'unpaid';

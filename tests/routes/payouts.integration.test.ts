@@ -69,10 +69,13 @@ describe('Payouts API', () => {
     expect(payAccRes.status).toBe(200);
     expect(payAccRes.body.count).toBe(1);
 
-    // Verify PT session payment status is now paid
+    // The trainer has been settled with. `payoutStatus` rather than
+    // `paymentStatus`: the two were one column, and paying a trainer used to
+    // also record that the member had paid the gym — see
+    // ptPayouts.integration.test.ts for the pair of them kept apart.
     const updatedSession = await prisma.ptSession.findFirst({
       where: { trainerId: trainer.id },
     });
-    expect(updatedSession?.paymentStatus).toBe('paid');
+    expect(updatedSession?.payoutStatus).toBe('paid');
   });
 });

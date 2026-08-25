@@ -2,6 +2,7 @@ import type { Response } from "express";
 import prisma from "../db.js";
 import type { AuthedRequest } from "../types.js";
 import type { TrainerIdParam } from "../schemas.js";
+import { audit } from "../services/audit.js";
 import { sum } from "../services/money.js";
 
 export const getTrainerPayouts = async (
@@ -28,13 +29,13 @@ export const getTrainerPayouts = async (
       const totalEarned = sum(completedSessions.map((s) => s.trainerCommission));
       const unpaidCommission = sum(
         completedSessions
-          .filter((s) => s.paymentStatus === "unpaid")
+          .filter((s) => s.payoutStatus === "unpaid")
           .map((s) => s.trainerCommission),
       );
 
       const paidCommission = sum(
         completedSessions
-          .filter((s) => s.paymentStatus === "paid")
+          .filter((s) => s.payoutStatus === "paid")
           .map((s) => s.trainerCommission),
       );
 
@@ -75,16 +76,37 @@ export const markPayoutAsPaid = async (
       return;
     }
 
-    // Update all completed, unpaid sessions to paid
+    // What is about to be settled, read before the update: afterwards there is
+    // no way to tell which sessions this payout covered from the rows alone.
+    const owed = await prisma.ptSession.findMany({
+      where: { gymId, trainerId, status: "completed", payoutStatus: "unpaid" },
+      select: { id: true, trainerCommission: true },
+    });
+
     const updateResult = await prisma.ptSession.updateMany({
       where: {
         gymId,
         trainerId,
         status: "completed",
-        paymentStatus: "unpaid",
+        payoutStatus: "unpaid",
       },
       data: {
-        paymentStatus: "paid",
+        payoutStatus: "paid",
+      },
+    });
+
+    // Money leaving the gym, so it goes in the trail like every other movement
+    // of it. Without this a payout is the one financial act in the app that
+    // leaves no record of who authorised it.
+    await audit(req, {
+      action: "trainer.payout",
+      entity: "trainer",
+      entityId: trainerId,
+      entityLabel: `${trainer.name} · Rs. ${sum(owed.map((s) => s.trainerCommission))}`,
+      after: {
+        sessions: updateResult.count,
+        amount: sum(owed.map((s) => s.trainerCommission)),
+        sessionIds: owed.map((s) => s.id),
       },
     });
 

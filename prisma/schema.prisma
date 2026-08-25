@@ -690,7 +690,16 @@ model PtSession {
   priceCharged      Decimal  @db.Decimal(10, 2)
   trainerCommission Decimal  @db.Decimal(10, 2)
   status            String   @default("scheduled") // scheduled, completed, cancelled
+  /// Whether the MEMBER has paid the gym for this session. Setting it on
+  /// create is what writes the Payment row.
   paymentStatus     String   @default("unpaid") // unpaid, paid
+  /// Whether the GYM has paid the TRAINER their commission for it.
+  ///
+  /// Separate from `paymentStatus` because the two were one column and meant
+  /// different things: taking a member's money at the counter marked the
+  /// trainer as already paid out, so the payouts page reported nothing owed
+  /// on sessions nobody had been paid for.
+  payoutStatus      String   @default("unpaid") // unpaid, paid
   createdAt         DateTime @default(now())
 
   gym               Gym      @relation(fields: [gymId], references: [id])

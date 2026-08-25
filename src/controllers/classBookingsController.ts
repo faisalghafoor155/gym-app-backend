@@ -94,9 +94,20 @@ export const create = async (
       return;
     }
 
-    // Perform transaction to ensure capacity is not exceeded at booking time
-    const result = await prisma.$transaction(async (tx) => {
-      // Check existing booking
+    /*
+     * Capacity is counted and then written, which is only safe if no other
+     * booking can slip in between the two. Read Committed does not give that:
+     * two receptionists booking the last place both count nine, both find room
+     * and both insert, and the class runs one over. Serializable is what makes
+     * the count a promise — Postgres aborts the loser rather than letting it
+     * through.
+     *
+     * An abort is not a refusal, though. It means "your view of the class was
+     * stale, look again", and a booking that answered "full" on the strength
+     * of one would turn somebody away from a class with places left. So it is
+     * retried, and only a count taken cleanly can refuse.
+     */
+    const attempt = () => prisma.$transaction(async (tx) => {
       const existing = await tx.classBooking.findFirst({
         where: {
           memberId,
@@ -105,18 +116,15 @@ export const create = async (
         },
       });
 
-      if (existing) {
-        if (existing.status === 'cancelled') {
-          // Reactivate cancelled booking
-          return tx.classBooking.update({
-            where: { id: existing.id },
-            data: { status: 'booked' },
-          });
-        }
+      // Somebody already booked into this session cannot book again, whatever
+      // the room looks like.
+      if (existing && existing.status !== 'cancelled') {
         throw new Error('already_booked');
       }
 
-      // Check current capacity
+      // Counted before both paths, not just the insert. Coming back from a
+      // cancellation is asking for a place like anybody else — the place they
+      // gave up may well have been taken while they were gone.
       const bookingsCount = await tx.classBooking.count({
         where: {
           scheduleId,
@@ -129,6 +137,13 @@ export const create = async (
         throw new Error('capacity_exceeded');
       }
 
+      if (existing) {
+        return tx.classBooking.update({
+          where: { id: existing.id },
+          data: { status: 'booked' },
+        });
+      }
+
       return tx.classBooking.create({
         data: {
           gymId: req.gymId,
@@ -138,7 +153,22 @@ export const create = async (
           status: 'booked',
         },
       });
-    });
+    }, { isolationLevel: 'Serializable' });
+
+    /** Retried a few times: contention is between the handful of people
+     *  booking one class at one moment, so a couple of goes settles it. */
+    const isRetryable = (e: { code?: string }): boolean =>
+      e.code === 'P2034' || e.code === '40001' || e.code === 'P2002';
+
+    let result;
+    for (let tries = 0; ; tries++) {
+      try {
+        result = await attempt();
+        break;
+      } catch (err) {
+        if (tries >= 4 || !isRetryable(err as { code?: string })) throw err;
+      }
+    }
 
     await audit(req, {
       action: 'classBooking.create',
@@ -161,6 +191,15 @@ export const create = async (
     }
     if (err.message === 'already_booked') {
       res.status(400).json({ error: 'Member is already booked into this class session' });
+      return;
+    }
+    // Two bookings raced for the same place and Postgres aborted this one
+    // (40001), or both reached the unique index at once (P2002). Either way
+    // the other request took the place, so this reads as a full class rather
+    // than as a fault — the caller is told the same thing they would have been
+    // told a moment later anyway.
+    if (err.code === 'P2034' || err.code === '40001' || err.code === 'P2002') {
+      res.status(400).json({ error: 'This class session is fully booked (capacity reached)' });
       return;
     }
     console.error(err);
