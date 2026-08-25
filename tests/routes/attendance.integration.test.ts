@@ -339,3 +339,34 @@ describe('attendance stays inside its own gym', () => {
     expect(rows).toHaveLength(1);
   });
 });
+
+describe('what the check-in tells the desk', () => {
+  it('carries the member number, which the desk reads out to confirm who this is', async () => {
+    const owner = await makeGym();
+    const member = await addMember(owner.gymId, { name: 'Ahmed Ali' });
+
+    const res = await api().post('/api/attendance/checkin')
+      .set('Cookie', owner.cookie).send({ memberId: member.id });
+
+    expect(res.status).toBe(201);
+    // A name alone is ambiguous in a gym with two Ahmeds.
+    expect(res.body.member.memberNo).toMatch(/^MEM-\d{5}$/);
+    expect(res.body.member.name).toBe('Ahmed Ali');
+  });
+
+  it('carries the expiry date and plan, not just how many days are left', async () => {
+    const owner = await makeGym();
+    const member = await addMember(owner.gymId);
+    await addMembership(owner.gymId, member.id, { expiresInDays: -12 });
+
+    const res = await api().post('/api/attendance/checkin')
+      .set('Cookie', owner.cookie).send({ memberId: member.id });
+
+    // The date is the thing a member argues with, so the desk needs it on
+    // screen rather than derived from a countdown.
+    expect(res.body.membership.expiryDate).toBeDefined();
+    expect(res.body.membership.planName).toBeDefined();
+    expect(res.body.membership.status).toBe('expired');
+    expect(res.body.membership.daysLeft).toBe(-12);
+  });
+});

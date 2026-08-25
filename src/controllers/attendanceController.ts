@@ -5,7 +5,11 @@ import { currentMembershipWhere, toView, withPlan } from '../services/membership
 import type { AuthedRequest } from '../types.js';
 import type { CheckinBody, IdParam } from '../schemas.js';
 
-const memberSummary = { member: { select: { name: true, phone: true, photo: true } } } as const;
+// `memberNo` travels with the rest because the desk reads it out to confirm
+// who is standing there — a name alone is ambiguous in a gym with two Ahmeds.
+const memberSummary = {
+  member: { select: { name: true, phone: true, photo: true, memberNo: true } },
+} as const;
 
 /** The window a check-in belongs to: midnight to midnight, local time. */
 const dayBounds = (now: Date): { start: Date; end: Date } => {
