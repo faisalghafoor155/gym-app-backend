@@ -323,6 +323,18 @@ export const memberQuerySchema = z.object({
     .enum(GENDERS, { error: "must be male, female or other" })
     .or(blankToUndefined)
     .optional(),
+  /**
+   * Narrows the roster to one trainer's members — who a trainer is responsible
+   * for, and who to reassign when one leaves.
+   *
+   * `none` is a filter in its own right rather than an absent value: the
+   * members nobody has been given are exactly the list a gym works through
+   * when handing them out, and there is no other way to ask for them.
+   */
+  trainerId: uuid
+    .or(z.literal("none"))
+    .or(blankToUndefined)
+    .optional(),
   page: z.coerce.number().int().min(1).default(1),
   // Capped at 100 like the audit log: the ceiling is what stops a caller
   // asking for the whole table back through the page parameter.

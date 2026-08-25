@@ -142,7 +142,7 @@ export const getAll = async (
   req: AuthedRequest<Record<string, string>, unknown, unknown, MemberQuery>,
   res: Response,
 ): Promise<void> => {
-  const { search, status, gender, page, limit, all } = req.query;
+  const { search, status, gender, trainerId, page, limit, all } = req.query;
   try {
     // One clock for the whole request, so the rows, the filter boundaries and
     // the count can never disagree about what "today" was.
@@ -154,6 +154,10 @@ export const getAll = async (
       // that quietly went back to everyone on the next page would be worse
       // than no filter.
       ...(gender && { gender }),
+      // `none` asks for the members nobody has been given, which is a real
+      // question — it is the list a gym works through when handing them out —
+      // and is not the same as not filtering at all.
+      ...(trainerId && { trainerId: trainerId === "none" ? null : trainerId }),
       // Whatever the front desk has to hand: a name, a number, or a phone.
       ...(search && {
         OR: [
@@ -211,6 +215,7 @@ export const getAll = async (
     const searchWhere = {
       gymId: req.gymId,
       ...(gender && { gender }),
+      ...(trainerId && { trainerId: trainerId === "none" ? null : trainerId }),
       ...(where.OR && { OR: where.OR }),
     };
     const countFor = (f: MemberStatusFilter) =>

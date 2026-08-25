@@ -256,6 +256,9 @@ model Member {
 
   @@unique([gymId, memberNo])
   @@index([gymId])
+  /// Filtering the roster by trainer runs on every page load of that view, and
+  /// without this it scans every member the gym has.
+  @@index([gymId, trainerId])
   @@index([photoKey])
 }
 
