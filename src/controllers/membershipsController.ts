@@ -270,3 +270,97 @@ export const renew = async (
     res.status(500).json({ error: 'Server error' });
   }
 };
+
+/**
+ * Moving a membership between the states the desk controls by hand.
+ *
+ * Suspending does not move the expiry date: the days keep running while the
+ * membership is paused. That is the gym's call to make at the counter — a
+ * member who is owed the time back gets it by renewing from a date the desk
+ * chooses, rather than by the app silently rewriting what they bought.
+ *
+ * Cancelling leaves every payment where it is. The money was taken, and the
+ * books have to keep saying so; refunding is a separate act with its own
+ * endpoint and its own audit entry.
+ */
+const setStatus = async (
+  req: AuthedRequest<MembershipParams>,
+  res: Response,
+  to: 'suspended' | 'active' | 'cancelled',
+  action: string,
+): Promise<void> => {
+  const { id: memberId, membershipId } = req.params;
+  try {
+    // Scoped by member and gym as well as id, so another gym's membership
+    // reads as missing rather than as forbidden.
+    const membership = await prisma.membership.findFirst({
+      where: { id: membershipId, memberId, gymId: req.gymId },
+      include: {
+        ...withPlan,
+        member: { select: { name: true, memberNo: true } },
+      },
+    });
+    if (!membership) {
+      res.status(404).json({ error: 'Membership not found' });
+      return;
+    }
+
+    // Superseded and cancelled memberships are closed history. Reopening one
+    // would either resurrect something deliberately called off, or put a
+    // second live membership beside the one that already replaced it.
+    if (membership.status === 'superseded' || membership.status === 'cancelled') {
+      res.status(400).json({ error: 'That membership can no longer be changed' });
+      return;
+    }
+
+    // Resuming is only meaningful for something actually suspended, and
+    // suspending something already suspended is a no-op the desk should be
+    // told about rather than silently accept.
+    if (to === 'active' && membership.status !== 'suspended') {
+      res.status(400).json({ error: 'That membership is not suspended' });
+      return;
+    }
+    if (to === 'suspended' && membership.status === 'suspended') {
+      res.status(400).json({ error: 'That membership is already suspended' });
+      return;
+    }
+
+    const updated = await prisma.membership.update({
+      where: { id: membership.id },
+      data: { status: to },
+      include: withPlan,
+    });
+
+    await audit(req, {
+      action,
+      entity: 'membership',
+      entityId: membership.id,
+      entityLabel: `${membership.member.memberNo} · ${membership.member.name} · ${membership.plan.name}`,
+      before: { status: membership.status, expiryDate: membership.expiryDate },
+      after: { status: to, expiryDate: updated.expiryDate },
+    });
+
+    res.json(toView(updated));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/** Pause a membership. The expiry date keeps running. */
+export const suspend = async (
+  req: AuthedRequest<MembershipParams>,
+  res: Response,
+): Promise<void> => setStatus(req, res, 'suspended', 'membership.suspend');
+
+/** Put a suspended membership back into service. */
+export const resume = async (
+  req: AuthedRequest<MembershipParams>,
+  res: Response,
+): Promise<void> => setStatus(req, res, 'active', 'membership.resume');
+
+/** Call a membership off for good. Payments are left untouched. */
+export const cancel = async (
+  req: AuthedRequest<MembershipParams>,
+  res: Response,
+): Promise<void> => setStatus(req, res, 'cancelled', 'membership.cancel');

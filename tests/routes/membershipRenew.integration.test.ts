@@ -324,20 +324,32 @@ describe("POST /members/:id/memberships/:membershipId/renew", () => {
 });
 
 describe("removed routes", () => {
-  it.each(["extend", "freeze", "resume"])(
-    "no longer answers /%s",
-    async (action) => {
-      const owner = await makeGym();
-      const { member, membership } = await memberDueForRenewal(owner.gymId);
+  // `resume` used to be listed here too. It exists again, alongside suspend
+  // and cancel, and is covered in membershipStatus.integration.test.ts —
+  // extending a membership by a number of days still is not a thing the app
+  // does, which is what these two guard.
+  it.each(["extend", "freeze"])("no longer answers /%s", async (action) => {
+    const owner = await makeGym();
+    const { member, membership } = await memberDueForRenewal(owner.gymId);
 
-      const res = await api()
-        .post(
-          `/api/members/${member.id}/memberships/${membership.id}/${action}`,
-        )
-        .set("Cookie", owner.cookie)
-        .send({ days: 7, reason: "should not work" });
+    const res = await api()
+      .post(`/api/members/${member.id}/memberships/${membership.id}/${action}`)
+      .set("Cookie", owner.cookie)
+      .send({ days: 7, reason: "should not work" });
 
-      expect(res.status).toBe(404);
-    },
-  );
+    expect(res.status).toBe(404);
+  });
+
+  it("refuses to resume a membership that is running normally", async () => {
+    const owner = await makeGym();
+    const { member, membership } = await memberDueForRenewal(owner.gymId);
+
+    const res = await api()
+      .post(`/api/members/${member.id}/memberships/${membership.id}/resume`)
+      .set("Cookie", owner.cookie);
+
+    // 400 rather than 404: the route exists now, but resuming is only
+    // meaningful for something actually suspended.
+    expect(res.status).toBe(400);
+  });
 });

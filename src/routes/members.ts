@@ -30,6 +30,9 @@ import {
   getHistory as getMembershipHistory,
   create as createMembership,
   renew as renewMembership,
+  suspend as suspendMembership,
+  resume as resumeMembership,
+  cancel as cancelMembership,
 } from "../controllers/membershipsController.js";
 
 const router = Router();
@@ -95,6 +98,27 @@ router.post(
   validate(membershipParams, "params"),
   validate(renewMembershipSchema),
   authed(renewMembership),
+);
+
+// Pausing and calling off a membership. Same permission as selling one: these
+// are counter decisions, and whoever can take the money can also stop it.
+router.post(
+  "/:id/memberships/:membershipId/suspend",
+  requirePermission("canManageMemberships"),
+  validate(membershipParams, "params"),
+  authed(suspendMembership),
+);
+router.post(
+  "/:id/memberships/:membershipId/resume",
+  requirePermission("canManageMemberships"),
+  validate(membershipParams, "params"),
+  authed(resumeMembership),
+);
+router.post(
+  "/:id/memberships/:membershipId/cancel",
+  requirePermission("canManageMemberships"),
+  validate(membershipParams, "params"),
+  authed(cancelMembership),
 );
 
 export default router;
