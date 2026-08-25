@@ -24,6 +24,7 @@ import {
   checkoutCart,
   restock,
   salesReport,
+  exportSalesCsv,
 } from "../controllers/supplementsController.js";
 
 const router = Router();
@@ -33,6 +34,12 @@ router.use(requireStaff);
 
 // Ahead of "/:id" so a literal path is never read as an id. Revenue is money,
 // which is the owner's to see — the same rule the payments routes follow.
+router.get(
+  "/sales/export",
+  requireOwner,
+  validate(salesReportQuerySchema, "query"),
+  authed(exportSalesCsv),
+);
 router.get(
   "/sales/report",
   requireOwner,

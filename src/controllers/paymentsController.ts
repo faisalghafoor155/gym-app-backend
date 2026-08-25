@@ -4,6 +4,7 @@ import type { Response } from "express";
 import { Prisma, MembershipStatus } from "@prisma/client";
 import prisma from "../db.js";
 import { audit, diff } from "../services/audit.js";
+import { sendCsv, stampedName, toCsv } from "../services/csv.js";
 import { endOfDayUtc } from "../services/dates.js";
 import { toView, withPlan } from "../services/membership.js";
 import { sum, withMoney } from "../services/money.js";
@@ -833,6 +834,104 @@ export const getMonthlyCollection = async (
 };
 
 /**
+ * A month's collection as a CSV — either side of it, whole.
+ *
+ * The page pages, at fifty rows a time. Exporting what it holds would produce
+ * a file covering fifty of two hundred members with nothing to say so, which
+ * is the one direction a figure about money must never be wrong in. So this
+ * reads the month again without a page, from the same helpers the page uses,
+ * and the totals in the file are totals of the file.
+ *
+ * The two views are different sheets rather than one with a column for which
+ * side a row is on: a debt has no date, method or receipt, and padding it into
+ * the paid shape produces a column of blanks that reads as missing data.
+ */
+export const exportMonthlyCsv = async (
+  req: AuthedRequest<
+    Record<string, string>,
+    unknown,
+    unknown,
+    MonthlyCollectionQuery
+  >,
+  res: Response,
+): Promise<void> => {
+  const { month, search, view, includeDue } = req.query;
+  try {
+    const start = new Date(month.year, month.month - 1, 1, 0, 0, 0, 0);
+    const end = new Date(month.year, month.month, 0, 23, 59, 59, 999);
+
+    if (view === "unpaid") {
+      const unpaid = await unpaidForMonth(req.gymId, start, end, search);
+      const csv = toCsv(
+        [
+          "Member No", "Name", "Phone", "Plan",
+          "Expires", "Expected", "Paid", "Shortfall",
+        ],
+        unpaid.map((r) => [
+          r.memberNo,
+          r.name,
+          r.phone ?? "",
+          r.membership.planName,
+          new Date(r.membership.expiryDate).toISOString().split("T")[0],
+          r.expected,
+          r.paid,
+          r.shortfall,
+        ]),
+      );
+      sendCsv(res, `unpaid-${month.value}.csv`, csv);
+      return;
+    }
+
+    const rows = await prisma.payment.findMany({
+      where: {
+        gymId: req.gymId,
+        paymentDate: { gte: start, lte: end },
+        ...(!includeDue && { status: "paid" }),
+        ...(search && {
+          member: {
+            OR: [
+              { name: { contains: search, mode: "insensitive" as const } },
+              { phone: { contains: search, mode: "insensitive" as const } },
+              { memberNo: { contains: search, mode: "insensitive" as const } },
+            ],
+          },
+        }),
+      },
+      include: {
+        member: { select: { name: true, phone: true, memberNo: true } },
+        recordedBy: { select: { name: true } },
+      },
+      orderBy: { paymentDate: "desc" },
+    });
+
+    const csv = toCsv(
+      [
+        "Date", "Member No", "Member", "Phone",
+        "Amount", "For", "Method", "Channel", "Status", "Taken by", "Notes",
+      ],
+      rows.map((p) => [
+        p.paymentDate.toISOString().split("T")[0],
+        p.member?.memberNo ?? "",
+        p.member?.name ?? "",
+        p.member?.phone ?? "",
+        p.amount.toString(),
+        p.type,
+        p.method ?? "",
+        channelLabel(p.channel),
+        p.status,
+        p.recordedBy?.name ?? "",
+        p.notes ?? "",
+      ]),
+    );
+
+    sendCsv(res, `collection-${month.value}.csv`, csv);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+/**
  * The renewal call list: members whose current membership has run out.
  *
  * Now that payments name the membership they settled, each entry also carries
@@ -975,28 +1074,7 @@ export const exportCsv = async (
       ...(req.role === "owner" ? [p.recordedBy?.name ?? ""] : []),
     ]);
 
-    // Escape CSV values (handle commas and quotes)
-    const escapeCsvValue = (value: string): string => {
-      if (value.includes(",") || value.includes('"') || value.includes("\n")) {
-        return `"${value.replace(/"/g, '""')}"`;
-      }
-      return value;
-    };
-
-    // Build CSV content
-    const csvContent = [
-      headers.map(escapeCsvValue).join(","),
-      ...rows.map((row) => row.map(escapeCsvValue).join(",")),
-    ].join("\n");
-
-    // Send as file download
-    const timestamp = new Date().toISOString().split("T")[0];
-    res.setHeader("Content-Type", "text/csv; charset=utf-8");
-    res.setHeader(
-      "Content-Disposition",
-      `attachment; filename="payments-${timestamp}.csv"`,
-    );
-    res.send(csvContent);
+    sendCsv(res, stampedName("payments"), toCsv(headers, rows));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Failed to export CSV" });

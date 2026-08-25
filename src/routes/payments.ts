@@ -22,6 +22,7 @@ import {
   getDue,
   getSummary,
   getMonthlyCollection,
+  exportMonthlyCsv,
   exportCsv,
 } from "../controllers/paymentsController.js";
 
@@ -72,6 +73,14 @@ router.get(
   requireAnyPermission("canViewReports", "canManagePayments"),
   validate(monthlyCollectionQuerySchema, "query"),
   authed(getMonthlyCollection),
+);
+// The same month, unpaged. The page holds fifty rows; a file built from those
+// would cover fifty of two hundred members and say nothing about the rest.
+router.get(
+  "/monthly/export",
+  requireAnyPermission("canViewReports", "canManagePayments"),
+  validate(monthlyCollectionQuerySchema, "query"),
+  authed(exportMonthlyCsv),
 );
 router.put(
   "/:id",

@@ -2,6 +2,7 @@ import type { Response } from 'express';
 import { Prisma } from '@prisma/client';
 import prisma from '../db.js';
 import { audit } from '../services/audit.js';
+import { sendCsv, stampedName, toCsv } from '../services/csv.js';
 import { sum, withMoney } from '../services/money.js';
 import type { AuthedRequest } from '../types.js';
 import type {
@@ -346,6 +347,58 @@ export const salesReport = async (
         buyer: s.member ? `${s.member.memberNo} · ${s.member.name}` : 'Walk-in',
       })),
     });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * Every sale in the window, as a CSV.
+ *
+ * Separate from `salesReport` because the two want different amounts of the
+ * same data. The report shows the fifty most recent sales, which is a list a
+ * person can read; an export of those fifty would be a file that looks
+ * complete and is not, and nothing about it would say so.
+ *
+ * No `slice` here, therefore, and no paging: the window is the only bound, and
+ * it is the one the caller asked for.
+ */
+export const exportSalesCsv = async (
+  req: AuthedRequest<Record<string, string>, unknown, unknown, SalesReportQuery>,
+  res: Response,
+): Promise<void> => {
+  const { months } = req.query;
+  try {
+    const now = new Date();
+    const since = new Date(now.getFullYear(), now.getMonth() - (months - 1), 1);
+
+    const sales = await prisma.supplementSale.findMany({
+      where: { gymId: req.gymId, soldAt: { gte: since } },
+      include: {
+        supplement: { select: { name: true } },
+        member: { select: { name: true, memberNo: true } },
+      },
+      orderBy: { soldAt: 'desc' },
+    });
+
+    const csv = toCsv(
+      ['Date', 'Supplement', 'Member No', 'Buyer', 'Quantity', 'Unit Price', 'Total', 'Notes'],
+      sales.map(s => [
+        s.soldAt.toISOString().split('T')[0],
+        s.supplement.name,
+        s.member?.memberNo ?? '',
+        // A sale with no member is a walk-in rather than a blank: the money
+        // was still taken, and a column of empties reads as lost data.
+        s.member?.name ?? 'Walk-in',
+        s.quantity,
+        s.unitPrice.toString(),
+        s.total.toString(),
+        s.notes ?? '',
+      ]),
+    );
+
+    sendCsv(res, stampedName('supplement-sales'), csv);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
