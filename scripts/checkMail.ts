@@ -18,6 +18,10 @@
 import 'dotenv/config';
 import nodemailer from 'nodemailer';
 
+// The same placeholder filter the app applies, imported rather than repeated so
+// this script cannot report a config the app would disagree with.
+import { isPlaceholder } from '../src/services/mail';
+
 const resendKey = process.env.RESEND_API_KEY;
 const host = process.env.SMTP_HOST;
 const user = process.env.SMTP_USER;
@@ -47,6 +51,14 @@ console.log();
 // Mirrors the precedence in services/mail.ts. Worth restating here because a
 // leftover Resend key silently outranking SMTP is exactly the confusion this
 // script is meant to end.
+if (resendKey && isPlaceholder(resendKey)) {
+  fail(
+    'RESEND_API_KEY still holds its placeholder, so mail is disabled and reset ' +
+    'links are only printed to the server log. Get a key at ' +
+    'https://resend.com → API Keys → Create and put it in backend/.env.',
+  );
+}
+
 if (resendKey) {
   console.log('→ Resend would be used; the SMTP settings are ignored.');
   console.log('  Comment out RESEND_API_KEY to fall through to SMTP.\n');
@@ -57,7 +69,7 @@ if (!host || !user || !pass) {
   fail('SMTP is incomplete — host, user and pass are all required. Mail is disabled, and messages are only logged.');
 }
 
-if (/PASTE_YOUR/i.test(user!) || /PASTE_YOUR/i.test(pass!)) {
+if (isPlaceholder(user!) || isPlaceholder(pass!)) {
   fail('SMTP_USER / SMTP_PASS still hold their placeholders. Put your Gmail address and App Password in backend/.env.');
 }
 

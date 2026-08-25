@@ -13,11 +13,31 @@ import nodemailer, { type Transporter } from 'nodemailer';
  * password-reset flows stay usable — before anyone has set up mail at all.
  */
 
-const resendKey = process.env.RESEND_API_KEY;
+/**
+ * Whether a value is still the placeholder its `.env.example` shipped with.
+ *
+ * Without this check a half-filled `.env` looks configured, so mail is
+ * attempted, refused by the provider, and logged — while the fallback that
+ * prints reset links, the thing that keeps the flow usable, stays switched
+ * off. Treating a placeholder as absent puts that fallback back.
+ *
+ * Exported so `scripts/checkMail.ts` reports on the same rule the app applies.
+ */
+export const isPlaceholder = (value: string): boolean =>
+  // Matched anywhere, not just at the start: SMTP_FROM wraps its address in a
+  // display name, so the placeholder sits mid-string as `Gym <PASTE_...>`.
+  /PASTE_|re_xxx|xxxxx|\byou@|\byourdomain\b|^your /i.test(value.trim());
 
-const host = process.env.SMTP_HOST;
-const user = process.env.SMTP_USER;
-const pass = process.env.SMTP_PASS;
+const real = (value: string | undefined): string | undefined => {
+  const trimmed = value?.trim();
+  return trimmed && !isPlaceholder(trimmed) ? trimmed : undefined;
+};
+
+const resendKey = real(process.env.RESEND_API_KEY);
+
+const host = real(process.env.SMTP_HOST);
+const user = real(process.env.SMTP_USER);
+const pass = real(process.env.SMTP_PASS);
 
 /** Gmail and most providers speak implicit TLS on 465, STARTTLS on 587. */
 const port = Number(process.env.SMTP_PORT ?? 587);
@@ -34,8 +54,8 @@ export const mailEnabled = Boolean(resendKey) || smtpConfigured;
  * silently rewrites From to the authenticated account instead — worth knowing
  * when the header looks wrong in testing.
  */
-const from = process.env.MAIL_FROM
-  ?? process.env.SMTP_FROM
+const from = real(process.env.MAIL_FROM)
+  ?? real(process.env.SMTP_FROM)
   ?? (resendKey ? 'onboarding@resend.dev' : user ?? 'no-reply@localhost');
 
 const transporter: Transporter | null = smtpConfigured
