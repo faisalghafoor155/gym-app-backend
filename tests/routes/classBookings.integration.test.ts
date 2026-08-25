@@ -287,3 +287,76 @@ describe('bookings and other gyms', () => {
     expect(await prisma.classBooking.count()).toBe(0);
   });
 });
+
+describe('finding bookings again', () => {
+  /** Two members, two sessions a week apart, so every filter has something to
+   *  exclude as well as something to find. */
+  const aWeekOfBookings = async () => {
+    const ctx = await aClassWith(10, 2);
+    const nextWeek = new Date(ctx.date);
+    nextWeek.setDate(nextWeek.getDate() + 7);
+
+    await book(ctx.owner.cookie, ctx.scheduleId, ctx.members[0].id, ctx.date);
+    await book(ctx.owner.cookie, ctx.scheduleId, ctx.members[1].id, ctx.date);
+    await book(ctx.owner.cookie, ctx.scheduleId, ctx.members[0].id, nextWeek);
+
+    return { ...ctx, nextWeek };
+  };
+
+  const rows = (body: unknown): { member: { id: string } }[] =>
+    (body as { data?: unknown[] }).data as never ?? body as never;
+
+  it('lists them all when nothing is asked for', async () => {
+    const { owner } = await aWeekOfBookings();
+
+    const res = await api().get('/api/class-bookings').set('Cookie', owner.cookie);
+
+    expect(res.status).toBe(200);
+    expect(rows(res.body)).toHaveLength(3);
+  });
+
+  it('narrows to one member', async () => {
+    const { owner, members } = await aWeekOfBookings();
+
+    const res = await api().get('/api/class-bookings')
+      .query({ memberId: members[0].id }).set('Cookie', owner.cookie);
+
+    expect(rows(res.body)).toHaveLength(2);
+    expect(rows(res.body).every(b => b.member.id === members[0].id)).toBe(true);
+  });
+
+  it('narrows to one session of the week', async () => {
+    const { owner, date } = await aWeekOfBookings();
+
+    const res = await api().get('/api/class-bookings')
+      .query({ date: date.toISOString() }).set('Cookie', owner.cookie);
+
+    // Two people booked that day; the third booking is the week after.
+    expect(rows(res.body)).toHaveLength(2);
+  });
+
+  it('finds the day whether or not a time was sent with it', async () => {
+    const { owner, date } = await aWeekOfBookings();
+    const withTime = new Date(date);
+    withTime.setHours(18, 30, 0, 0);
+
+    const plain = await api().get('/api/class-bookings')
+      .query({ date: date.toISOString() }).set('Cookie', owner.cookie);
+    const timed = await api().get('/api/class-bookings')
+      .query({ date: withTime.toISOString() }).set('Cookie', owner.cookie);
+
+    // Bookings are stored at midnight, so a filter carrying an evening time
+    // used to match nothing at all.
+    expect(rows(timed.body)).toHaveLength(rows(plain.body).length);
+    expect(rows(timed.body)).toHaveLength(2);
+  });
+
+  it('narrows to one schedule', async () => {
+    const { owner, scheduleId } = await aWeekOfBookings();
+
+    const res = await api().get('/api/class-bookings')
+      .query({ scheduleId }).set('Cookie', owner.cookie);
+
+    expect(rows(res.body)).toHaveLength(3);
+  });
+});

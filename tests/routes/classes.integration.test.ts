@@ -126,3 +126,69 @@ describe('Gym Classes & Timetables API', () => {
     expect(book3.body.error).toContain('fully booked');
   });
 });
+
+describe('a schedule that could not happen', () => {
+  const aClass = async (cookie: string): Promise<string> => {
+    const res = await api().post('/api/classes').set('Cookie', cookie).send({ name: 'Yoga' });
+    return res.body.id;
+  };
+
+  const schedule = (cookie: string, classId: string, over: Record<string, unknown> = {}) =>
+    api().post('/api/classes/schedules').set('Cookie', cookie).send({
+      classId, dayOfWeek: 1, startTime: '09:00', endTime: '10:00', capacity: 10, ...over,
+    });
+
+  it('refuses one that ends before it starts', async () => {
+    const owner = await makeGym();
+    const classId = await aClass(owner.cookie);
+
+    const res = await schedule(owner.cookie, classId, { startTime: '18:00', endTime: '09:00' });
+
+    // Nothing enforced this, so a typo produced a slot of negative length and
+    // the timetable looked broken rather than wrong.
+    expect(res.status).toBe(400);
+    expect(await prisma.classSchedule.count()).toBe(0);
+  });
+
+  it('refuses one that ends the moment it starts', async () => {
+    const owner = await makeGym();
+    const classId = await aClass(owner.cookie);
+
+    const res = await schedule(owner.cookie, classId, { startTime: '09:00', endTime: '09:00' });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('accepts an unpadded hour, comparing it by the clock', async () => {
+    const owner = await makeGym();
+    const classId = await aClass(owner.cookie);
+
+    // '9:00' sorts after '10:00' as plain text; padded, it does not.
+    const res = await schedule(owner.cookie, classId, { startTime: '9:00', endTime: '10:00' });
+
+    expect(res.status).toBe(201);
+  });
+
+  it('refuses a day of the week that does not exist', async () => {
+    const owner = await makeGym();
+    const classId = await aClass(owner.cookie);
+
+    expect((await schedule(owner.cookie, classId, { dayOfWeek: 7 })).status).toBe(400);
+    expect((await schedule(owner.cookie, classId, { dayOfWeek: -1 })).status).toBe(400);
+  });
+
+  it('refuses a class nobody could attend', async () => {
+    const owner = await makeGym();
+    const classId = await aClass(owner.cookie);
+
+    expect((await schedule(owner.cookie, classId, { capacity: 0 })).status).toBe(400);
+  });
+
+  it('refuses a time that is not one', async () => {
+    const owner = await makeGym();
+    const classId = await aClass(owner.cookie);
+
+    expect((await schedule(owner.cookie, classId, { startTime: '25:00' })).status).toBe(400);
+    expect((await schedule(owner.cookie, classId, { startTime: '6pm' })).status).toBe(400);
+  });
+});

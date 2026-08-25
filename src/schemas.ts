@@ -845,14 +845,31 @@ export const createClassSchema = z.object({
   description: optionalText(500),
 });
 
-export const createClassScheduleSchema = z.object({
-  classId: uuid,
-  trainerId: uuid.or(z.literal("").transform(() => null)).nullish(),
-  dayOfWeek: z.coerce.number().int().min(0).max(6),
-  startTime: z.string().trim().regex(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/, "must be in HH:MM format"),
-  endTime: z.string().trim().regex(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/, "must be in HH:MM format"),
-  capacity: z.coerce.number().int().min(1).default(20),
-});
+export const createClassScheduleSchema = z
+  .object({
+    classId: uuid,
+    trainerId: uuid.or(z.literal("").transform(() => null)).nullish(),
+    dayOfWeek: z.coerce.number().int().min(0).max(6),
+    startTime: z.string().trim().regex(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/, "must be in HH:MM format"),
+    endTime: z.string().trim().regex(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/, "must be in HH:MM format"),
+    capacity: z.coerce.number().int().min(1).default(20),
+  })
+  /**
+   * A class cannot finish before it starts. Nothing enforced this, so `18:00`
+   * to `09:00` was accepted and the timetable showed a slot of negative
+   * length — which reads as a display bug rather than as the typo it is.
+   *
+   * Compared as strings because zero-padded HH:MM sorts the same way as the
+   * clock does. `09:00` is padded by the regex above; `9:00` is not, so it is
+   * padded here before comparing.
+   */
+  .refine(
+    (s) => {
+      const pad = (t: string) => (t.length === 4 ? `0${t}` : t);
+      return pad(s.endTime) > pad(s.startTime);
+    },
+    { path: ["endTime"], error: "must be after the start time" },
+  );
 
 export const createClassBookingSchema = z.object({
   scheduleId: uuid,

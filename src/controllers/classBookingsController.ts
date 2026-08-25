@@ -14,7 +14,11 @@ export const getAll = async (
   const { memberId, scheduleId, date } = req.query;
   const memberIdStr = typeof memberId === 'string' ? memberId : undefined;
   const scheduleIdStr = typeof scheduleId === 'string' ? scheduleId : undefined;
+  // Normalised the same way the booking was when it was written, so a filter
+  // sent with a time on it still matches. Without this `?date=2026-08-24` and
+  // `?date=2026-08-24T18:00` disagree, and the second silently finds nothing.
   const parsedDate = date ? new Date(String(date)) : undefined;
+  parsedDate?.setHours(0, 0, 0, 0);
 
   try {
     const bookings = await prisma.classBooking.findMany({

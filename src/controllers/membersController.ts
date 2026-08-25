@@ -296,6 +296,20 @@ class DuplicateMemberError extends Error {
   }
 }
 
+/**
+ * A trainer named on an edit that this gym does not have, or no longer has.
+ *
+ * Thrown so the transaction rolls back: the fee lookup and the assignment are
+ * separate writes, and a lookup that failed quietly left the member on a
+ * trainer with no fee raised against them.
+ */
+class UnknownTrainerError extends Error {
+  constructor() {
+    super("Trainer not found");
+    this.name = "UnknownTrainerError";
+  }
+}
+
 /** The 409 both create and update answer a duplicate with. */
 const respondDuplicate = (res: Response, hit: DuplicateHit): void => {
   res
@@ -444,10 +458,19 @@ export const create = async (
         const trainer = await tx.trainer.findFirst({
           // Scoped by gym: a trainer id from elsewhere must not resolve here
           // and put another gym's name on this member's bill.
-          where: { id: fields.trainerId, gymId: req.gymId },
+          //
+          // Active only, matching PT sessions and class schedules: somebody
+          // who has left the gym cannot be given a new member, and a fee
+          // charged in their name is money owed to nobody.
+          where: { id: fields.trainerId, gymId: req.gymId, isActive: true },
           select: trainerFeeSelect,
         });
-        if (trainer) {
+        // Refused rather than ignored, same as on edit: the member row was
+        // written a moment ago carrying this trainer, so letting the lookup
+        // miss quietly would register them onto a trainer who has left, with
+        // no fee raised for it. Throwing rolls the whole registration back.
+        if (!trainer) throw new UnknownTrainerError();
+        {
           const charge = buildPtFeeCharge(
             req.gymId,
             created.id,
@@ -496,6 +519,10 @@ export const create = async (
   } catch (err) {
     if (err instanceof DuplicateMemberError) {
       respondDuplicate(res, err.hit);
+      return;
+    }
+    if (err instanceof UnknownTrainerError) {
+      res.status(404).json({ error: "Trainer not found" });
       return;
     }
     console.error(err);
@@ -612,7 +639,9 @@ export const update = async (
       if (trainerId && trainerId !== existing.trainerId) {
         const [trainer, gym] = await Promise.all([
           tx.trainer.findFirst({
-            where: { id: trainerId, gymId: req.gymId },
+            // Active only, matching PT sessions and class schedules: a trainer
+            // who has left cannot take on a new member.
+            where: { id: trainerId, gymId: req.gymId, isActive: true },
             select: trainerFeeSelect,
           }),
           tx.gym.findUniqueOrThrow({
@@ -620,14 +649,17 @@ export const update = async (
             select: { defaultPtFee: true },
           }),
         ]);
-        if (trainer) {
-          const charge = buildPtFeeCharge(req.gymId, id, trainer, gym, {
-            override: ptFee,
-            paid: ptFeePaid,
-            recordedById: req.userId,
-          });
-          if (charge) await tx.payment.create({ data: charge });
-        }
+        // Refused rather than ignored. The fee lookup and the assignment are
+        // two writes, and letting the first fail quietly put the member on a
+        // trainer with no fee raised at all — the one outcome nobody chose.
+        if (!trainer) throw new UnknownTrainerError();
+
+        const charge = buildPtFeeCharge(req.gymId, id, trainer, gym, {
+          override: ptFee,
+          paid: ptFeePaid,
+          recordedById: req.userId,
+        });
+        if (charge) await tx.payment.create({ data: charge });
       }
 
       await tx.member.update({
@@ -668,6 +700,10 @@ export const update = async (
   } catch (err) {
     if (err instanceof DuplicateMemberError) {
       respondDuplicate(res, err.hit);
+      return;
+    }
+    if (err instanceof UnknownTrainerError) {
+      res.status(404).json({ error: "Trainer not found" });
       return;
     }
     console.error(err);

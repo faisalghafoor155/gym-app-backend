@@ -284,3 +284,82 @@ describe('paying a trainer out', () => {
     expect((await payoutFor(owner.cookie, trainerId))?.unpaidCommission).toBe(1200);
   });
 });
+
+describe('a trainer who has left', () => {
+  const deactivate = async (cookie: string, trainerId: string) =>
+    api().delete(`/api/trainers/${trainerId}`).set('Cookie', cookie);
+
+  it('cannot be given a new member', async () => {
+    const owner = await makeGym();
+    const member = await addMember(owner.gymId);
+    const trainerId = await aTrainer(owner.cookie);
+    await deactivate(owner.cookie, trainerId);
+
+    const res = await api().put(`/api/members/${member.id}`)
+      .set('Cookie', owner.cookie).send({ name: 'Someone', trainerId });
+
+    // Refused rather than quietly assigned: the fee lookup and the assignment
+    // are two writes, and a silent miss put the member on a trainer with no
+    // fee raised at all.
+    expect(res.status).toBe(404);
+    const after = await prisma.member.findUniqueOrThrow({ where: { id: member.id } });
+    expect(after.trainerId).toBeNull();
+    expect(await prisma.payment.count()).toBe(0);
+  });
+
+  it('cannot be given one at registration either', async () => {
+    const owner = await makeGym();
+    const trainerId = await aTrainer(owner.cookie);
+    await deactivate(owner.cookie, trainerId);
+
+    const res = await api().post('/api/members').set('Cookie', owner.cookie)
+      .send({ name: 'New Joiner', phone: '03007654321', trainerId });
+
+    // The whole registration rolls back rather than quietly landing them on a
+    // trainer who has left. The desk is told, and picks somebody who is there.
+    expect(res.status).toBe(404);
+    expect(await prisma.member.count({ where: { name: 'New Joiner' } })).toBe(0);
+    expect(await prisma.payment.count()).toBe(0);
+  });
+
+  it('cannot take a new PT session', async () => {
+    const owner = await makeGym();
+    const member = await addMember(owner.gymId);
+    const trainerId = await aTrainer(owner.cookie);
+    await deactivate(owner.cookie, trainerId);
+
+    const res = await aSession(owner.cookie, member.id, trainerId);
+
+    expect(res.status).toBe(404);
+  });
+
+  it('is still owed for the work they already did', async () => {
+    const owner = await makeGym();
+    const member = await addMember(owner.gymId);
+    const trainerId = await aTrainer(owner.cookie, { commissionPercentage: 30 });
+    await aSession(owner.cookie, member.id, trainerId, { priceCharged: 4000 });
+
+    await deactivate(owner.cookie, trainerId);
+
+    // Leaving does not forfeit commission already earned, so they stay on the
+    // payouts list until they have been settled with.
+    expect((await payoutFor(owner.cookie, trainerId))?.unpaidCommission).toBe(1200);
+    const paid = await api().post(`/api/payouts/${trainerId}/pay`).set('Cookie', owner.cookie);
+    expect(paid.body.count).toBe(1);
+  });
+
+  it('keeps the members they already had', async () => {
+    const owner = await makeGym();
+    const member = await addMember(owner.gymId);
+    const trainerId = await aTrainer(owner.cookie);
+    await api().put(`/api/members/${member.id}`)
+      .set('Cookie', owner.cookie).send({ name: 'Kept', trainerId });
+
+    await deactivate(owner.cookie, trainerId);
+
+    // Deactivating is not reassigning. The gym decides who picks them up, and
+    // the roster still says who had them until it does.
+    const after = await prisma.member.findUniqueOrThrow({ where: { id: member.id } });
+    expect(after.trainerId).toBe(trainerId);
+  });
+});
