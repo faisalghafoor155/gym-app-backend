@@ -262,3 +262,83 @@ describe('renewal — a member whose month is up pays again', () => {
     expect(rows[0]!.membershipId).toBe(membership.id);
   });
 });
+
+/**
+ * A member's very first membership.
+ *
+ * Every other test here starts from somebody who already has one, so the path
+ * that runs when there is nothing to supersede was never exercised: the
+ * transaction's `updateMany` matches no rows, and the dates come from the plan
+ * rather than from a previous expiry.
+ */
+describe('selling a first membership', () => {
+  it('starts today and runs for the plan\'s duration', async () => {
+    const owner = await makeGym();
+    const member = await addMember(owner.gymId, { name: 'Brand New' });
+    const plan = await addPlan(owner.gymId, { price: 3000, durationDays: 90 });
+
+    const res = await api()
+      .post(`/api/members/${member.id}/memberships`)
+      .set('Cookie', owner.cookie)
+      .send({ planId: plan.id });
+
+    expect(res.status).toBe(201);
+
+    const rows = await prisma.membership.findMany({ where: { memberId: member.id } });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe('active');
+    // The price is snapshotted onto the membership, so a later change to the
+    // plan cannot rewrite what this member was charged.
+    expect(Number(rows[0].pricePaid)).toBe(3000);
+
+    const expectedExpiry = addDays(rows[0].startDate, 90);
+    expect(rows[0].expiryDate.toISOString()).toBe(expectedExpiry.toISOString());
+  });
+
+  it('honours an explicit start date rather than today', async () => {
+    const owner = await makeGym();
+    const member = await addMember(owner.gymId);
+    const plan = await addPlan(owner.gymId, { durationDays: 30 });
+    const startDate = addDays(new Date(), 7);
+
+    const res = await api()
+      .post(`/api/members/${member.id}/memberships`)
+      .set('Cookie', owner.cookie)
+      .send({ planId: plan.id, startDate: startDate.toISOString() });
+
+    expect(res.status).toBe(201);
+    const row = await prisma.membership.findFirstOrThrow({ where: { memberId: member.id } });
+    expect(row.expiryDate.toISOString()).toBe(addDays(row.startDate, 30).toISOString());
+    // A membership starting a week out must not already be running.
+    expect(row.startDate.getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it('leaves the member owing the full price until it is paid', async () => {
+    const owner = await makeGym();
+    const member = await addMember(owner.gymId);
+    const plan = await addPlan(owner.gymId, { price: 4000, durationDays: 30 });
+
+    await api()
+      .post(`/api/members/${member.id}/memberships`)
+      .set('Cookie', owner.cookie)
+      .send({ planId: plan.id });
+
+    // Selling a membership records no money — the payment is a separate act.
+    expect(await prisma.payment.count({ where: { memberId: member.id } })).toBe(0);
+  });
+
+  it('refuses a plan the gym has retired', async () => {
+    const owner = await makeGym();
+    const member = await addMember(owner.gymId);
+    const plan = await addPlan(owner.gymId);
+    await prisma.membershipPlan.update({ where: { id: plan.id }, data: { isActive: false } });
+
+    const res = await api()
+      .post(`/api/members/${member.id}/memberships`)
+      .set('Cookie', owner.cookie)
+      .send({ planId: plan.id });
+
+    expect(res.status).toBe(400);
+    expect(await prisma.membership.count({ where: { memberId: member.id } })).toBe(0);
+  });
+});

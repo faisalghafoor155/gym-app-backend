@@ -365,3 +365,148 @@ describe('payments list — paging and totals', () => {
     expect(asOwner.body.collected).toBe(5700);
   });
 });
+
+
+/**
+ * Deleting a payment: the route has always existed, but nothing exercised it.
+ *
+ * It matters because a deletion is how a mis-keyed amount gets corrected, and
+ * the money it was holding has to flow back into what the member owes — a
+ * delete that left the outstanding figure alone would quietly forgive a debt.
+ */
+describe('deleting a payment', () => {
+  it('puts the money back on the member\'s bill', async () => {
+    const owner = await makeGym();
+    const { member, membership } = await withExpiredMembership(owner.gymId, { price: 2500 });
+
+    const made = await api().post('/api/payments').set('Cookie', owner.cookie).send({
+      memberId: member.id,
+      membershipId: membership.id,
+      amount: 2500,
+      type: 'membership',
+    });
+    expect(made.status).toBeLessThan(300);
+    const paymentId = made.body.id ?? made.body.data?.id;
+
+    // An expired membership stays on the due list once settled, showing a
+    // cleared debt rather than dropping off it.
+    const settled = await api().get('/api/payments/due').set('Cookie', owner.cookie);
+    const rowFor = (body: unknown) =>
+      (body as { membership: { id: string }; paid: number; outstanding: number }[])
+        .find(r => r.membership.id === membership.id);
+    expect(rowFor(settled.body)).toMatchObject({ paid: 2500, outstanding: 0 });
+
+    const del = await api().delete(`/api/payments/${paymentId}`).set('Cookie', owner.cookie);
+    expect(del.status).toBe(200);
+
+    expect(await prisma.payment.findUnique({ where: { id: paymentId } })).toBeNull();
+    const after = await api().get('/api/payments/due').set('Cookie', owner.cookie);
+    expect(rowFor(after.body)).toMatchObject({ paid: 0, outstanding: 2500 });
+  });
+
+  it('leaves a partial payment owing only the rest once the other half is deleted', async () => {
+    const owner = await makeGym();
+    const { member, membership } = await withExpiredMembership(owner.gymId, { price: 2500 });
+
+    const first = await api().post('/api/payments').set('Cookie', owner.cookie)
+      .send({ memberId: member.id, membershipId: membership.id, amount: 1000, type: 'membership' });
+    await api().post('/api/payments').set('Cookie', owner.cookie)
+      .send({ memberId: member.id, membershipId: membership.id, amount: 1500, type: 'membership' });
+
+    await api().delete(`/api/payments/${first.body.id ?? first.body.data?.id}`).set('Cookie', owner.cookie);
+
+    const due = await api().get('/api/payments/due').set('Cookie', owner.cookie);
+    const row = (due.body as { membership: { id: string }; outstanding: number }[])
+      .find(r => r.membership.id === membership.id);
+    expect(row?.outstanding).toBe(1000);
+  });
+
+  it('will not delete another gym\'s payment', async () => {
+    const owner = await makeGym();
+    const other = await makeGym({ gymName: 'Rival Gym' });
+    const theirMember = await addMember(other.gymId);
+    const theirs = await prisma.payment.create({
+      data: { gymId: other.gymId, memberId: theirMember.id, amount: 900, type: 'membership' },
+      select: { id: true },
+    });
+
+    const res = await api().delete(`/api/payments/${theirs.id}`).set('Cookie', owner.cookie);
+
+    expect(res.status).toBe(404);
+    expect(await prisma.payment.findUnique({ where: { id: theirs.id } })).not.toBeNull();
+  });
+
+  it('refuses staff who may not manage payments', async () => {
+    const owner = await makeGym();
+    const member = await addMember(owner.gymId);
+    const payment = await prisma.payment.create({
+      data: { gymId: owner.gymId, memberId: member.id, amount: 900, type: 'membership' },
+      select: { id: true },
+    });
+    const staff = await addUser(owner.gymId, { role: 'staff' });
+
+    const res = await api().delete(`/api/payments/${payment.id}`).set('Cookie', staff.cookie);
+
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(await prisma.payment.findUnique({ where: { id: payment.id } })).not.toBeNull();
+  });
+
+  it('records the deletion in the audit trail', async () => {
+    const owner = await makeGym();
+    const member = await addMember(owner.gymId);
+    const payment = await prisma.payment.create({
+      data: { gymId: owner.gymId, memberId: member.id, amount: 1234, type: 'membership' },
+      select: { id: true },
+    });
+
+    await api().delete(`/api/payments/${payment.id}`).set('Cookie', owner.cookie);
+
+    const entry = await prisma.auditLog.findFirst({
+      where: { gymId: owner.gymId, action: 'payment.delete', entityId: payment.id },
+    });
+    // The row is gone, so the log is the only surviving record of the amount.
+    expect(entry).not.toBeNull();
+    expect((entry?.before as { amount?: number })?.amount).toBe(1234);
+  });
+});
+
+/**
+ * The same fee keyed twice — a double-click, or two staff at one counter.
+ *
+ * Nothing stops it, which is the honest answer: two genuine part payments of
+ * equal size on one day are ordinary. What must hold is that the money is
+ * counted once per row and the member is not credited twice for one payment.
+ */
+describe('a manual payment recorded twice', () => {
+  it('counts both rows rather than collapsing them', async () => {
+    const owner = await makeGym();
+    const { member, membership } = await withExpiredMembership(owner.gymId, { price: 5000 });
+    const body = { memberId: member.id, membershipId: membership.id, amount: 2500, type: 'membership' as const };
+
+    await api().post('/api/payments').set('Cookie', owner.cookie).send(body);
+    await api().post('/api/payments').set('Cookie', owner.cookie).send(body);
+
+    expect(await prisma.payment.count({ where: { memberId: member.id } })).toBe(2);
+    const due = await api().get('/api/payments/due').set('Cookie', owner.cookie);
+    // Both rows count: 2500 + 2500 against a 5000 plan settles it exactly.
+    const row = (due.body as { membership: { id: string }; paid: number; outstanding: number }[])
+      .find(r => r.membership.id === membership.id);
+    expect(row).toMatchObject({ paid: 5000, outstanding: 0 });
+  });
+
+  it('never drives the outstanding figure below zero when overpaid twice', async () => {
+    const owner = await makeGym();
+    const { member, membership } = await withExpiredMembership(owner.gymId, { price: 2500 });
+    const body = { memberId: member.id, membershipId: membership.id, amount: 2500, type: 'membership' as const };
+
+    await api().post('/api/payments').set('Cookie', owner.cookie).send(body);
+    await api().post('/api/payments').set('Cookie', owner.cookie).send(body);
+
+    const due = await api().get('/api/payments/due').set('Cookie', owner.cookie);
+    const row = (due.body as { membership: { id: string }; paid: number; outstanding: number }[])
+      .find(r => r.membership.id === membership.id);
+    // 5000 paid against a 2500 plan: the surplus must read as zero owing, never
+    // as -2500, which would cancel out somebody else's real debt in a total.
+    expect(row).toMatchObject({ paid: 5000, outstanding: 0 });
+  });
+});

@@ -213,6 +213,233 @@ describe('plans', () => {
   });
 });
 
+describe('trainers', () => {
+  it('lists only the caller\'s own trainers', async () => {
+    const { a, b } = await twoGyms();
+    await api().post('/api/trainers').set('Cookie', a.cookie).send({ name: 'A Trainer' });
+    await api().post('/api/trainers').set('Cookie', b.cookie).send({ name: 'B Trainer' });
+
+    const res = await api().get('/api/trainers').set('Cookie', a.cookie);
+
+    expect(res.status).toBe(200);
+    const names = (res.body.data ?? res.body).map((t: { name: string }) => t.name);
+    expect(names).toEqual(['A Trainer']);
+  });
+
+  it('will not update another gym\'s trainer', async () => {
+    const { a, b } = await twoGyms();
+    const made = await api().post('/api/trainers').set('Cookie', b.cookie).send({ name: 'B Trainer' });
+    const trainerId = made.body.id ?? made.body.data?.id;
+
+    const res = await api()
+      .put(`/api/trainers/${trainerId}`)
+      .set('Cookie', a.cookie)
+      .send({ name: 'Hijacked' });
+
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    // The refusal must be a real one, not a 200 that quietly changed nothing.
+    const after = await prisma.trainer.findUnique({ where: { id: trainerId } });
+    expect(after?.name).toBe('B Trainer');
+  });
+
+  it('will not delete another gym\'s trainer', async () => {
+    const { a, b } = await twoGyms();
+    const made = await api().post('/api/trainers').set('Cookie', b.cookie).send({ name: 'B Trainer' });
+    const trainerId = made.body.id ?? made.body.data?.id;
+
+    const res = await api().delete(`/api/trainers/${trainerId}`).set('Cookie', a.cookie);
+
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    // Deletion here is a soft delete, so the row surviving is not enough — it
+    // must still be active.
+    const after = await prisma.trainer.findUnique({ where: { id: trainerId } });
+    expect(after).not.toBeNull();
+    expect(after?.isActive).toBe(true);
+  });
+});
+
+describe('classes', () => {
+  it('lists only the caller\'s own classes', async () => {
+    const { a, b } = await twoGyms();
+    await api().post('/api/classes').set('Cookie', a.cookie).send({ name: 'A Yoga' });
+    await api().post('/api/classes').set('Cookie', b.cookie).send({ name: 'B Spin' });
+
+    const res = await api().get('/api/classes').set('Cookie', a.cookie);
+
+    expect(res.status).toBe(200);
+    const names = (res.body.data ?? res.body).map((c: { name: string }) => c.name);
+    expect(names).toEqual(['A Yoga']);
+  });
+
+  it('will not schedule against another gym\'s class', async () => {
+    const { a, b } = await twoGyms();
+    const bClass = await api().post('/api/classes').set('Cookie', b.cookie).send({ name: 'B Spin' });
+    const classId = bClass.body.id ?? bClass.body.data?.id;
+
+    const res = await api()
+      .post('/api/classes/schedules')
+      .set('Cookie', a.cookie)
+      .send({ classId, dayOfWeek: 1, startTime: '09:00', endTime: '10:00', capacity: 10 });
+
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(await prisma.classSchedule.count({ where: { classId } })).toBe(0);
+  });
+
+  it('will not borrow another gym\'s trainer for its own schedule', async () => {
+    const { a, b } = await twoGyms();
+    const aClass = await api().post('/api/classes').set('Cookie', a.cookie).send({ name: 'A Yoga' });
+    const classId = aClass.body.id ?? aClass.body.data?.id;
+    const bTrainer = await api().post('/api/trainers').set('Cookie', b.cookie).send({ name: 'B Trainer' });
+    const trainerId = bTrainer.body.id ?? bTrainer.body.data?.id;
+
+    // The class is A's own, so only the trainer crosses the boundary — that
+    // alone has to be enough to refuse it.
+    const res = await api()
+      .post('/api/classes/schedules')
+      .set('Cookie', a.cookie)
+      .send({ classId, trainerId, dayOfWeek: 1, startTime: '09:00', endTime: '10:00', capacity: 10 });
+
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(await prisma.classSchedule.count({ where: { trainerId } })).toBe(0);
+  });
+
+  it('will not delete another gym\'s schedule', async () => {
+    const { a, b } = await twoGyms();
+    const bClass = await api().post('/api/classes').set('Cookie', b.cookie).send({ name: 'B Spin' });
+    const classId = bClass.body.id ?? bClass.body.data?.id;
+    const made = await api()
+      .post('/api/classes/schedules')
+      .set('Cookie', b.cookie)
+      .send({ classId, dayOfWeek: 2, startTime: '18:00', endTime: '19:00', capacity: 15 });
+    const scheduleId = made.body.id ?? made.body.data?.id;
+
+    const res = await api().delete(`/api/classes/schedules/${scheduleId}`).set('Cookie', a.cookie);
+
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    const after = await prisma.classSchedule.findUnique({ where: { id: scheduleId } });
+    expect(after?.isActive).toBe(true);
+  });
+});
+
+describe('pt sessions', () => {
+  /** A PT session joins a member to a trainer, so it can cross the boundary
+   *  from either side. Both directions are checked. */
+  const aTrainerIn = async (cookie: string) => {
+    const res = await api().post('/api/trainers').set('Cookie', cookie).send({ name: 'Coach' });
+    return (res.body.id ?? res.body.data?.id) as string;
+  };
+
+  it('will not book another gym\'s member', async () => {
+    const { a, b } = await twoGyms();
+    const trainerId = await aTrainerIn(a.cookie);
+
+    const res = await api().post('/api/pt-sessions').set('Cookie', a.cookie).send({
+      memberId: b.member.id,
+      trainerId,
+      sessionDate: '2026-03-01',
+      priceCharged: 1500,
+    });
+
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(await prisma.ptSession.count({ where: { memberId: b.member.id } })).toBe(0);
+  });
+
+  it('will not book another gym\'s trainer', async () => {
+    const { a, b } = await twoGyms();
+    const trainerId = await aTrainerIn(b.cookie);
+
+    const res = await api().post('/api/pt-sessions').set('Cookie', a.cookie).send({
+      memberId: a.member.id,
+      trainerId,
+      sessionDate: '2026-03-01',
+      priceCharged: 1500,
+    });
+
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(await prisma.ptSession.count({ where: { trainerId } })).toBe(0);
+  });
+
+  it('will not update another gym\'s session', async () => {
+    const { a, b } = await twoGyms();
+    const trainerId = await aTrainerIn(b.cookie);
+    const made = await api().post('/api/pt-sessions').set('Cookie', b.cookie).send({
+      memberId: b.member.id,
+      trainerId,
+      sessionDate: '2026-03-01',
+      priceCharged: 1500,
+    });
+    const sessionId = made.body.id ?? made.body.data?.id;
+
+    const res = await api()
+      .put(`/api/pt-sessions/${sessionId}`)
+      .set('Cookie', a.cookie)
+      .send({ status: 'cancelled' });
+
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    const after = await prisma.ptSession.findUnique({ where: { id: sessionId } });
+    expect(after?.status).not.toBe('cancelled');
+  });
+
+  it('lists and reports on the caller\'s own sessions only', async () => {
+    const { a, b } = await twoGyms();
+    const trainerId = await aTrainerIn(b.cookie);
+    await api().post('/api/pt-sessions').set('Cookie', b.cookie).send({
+      memberId: b.member.id,
+      trainerId,
+      sessionDate: '2026-03-01',
+      priceCharged: 4321,
+    });
+
+    const list = await api().get('/api/pt-sessions').set('Cookie', a.cookie);
+    expect(list.status).toBe(200);
+    expect(JSON.stringify(list.body)).not.toContain('Bob');
+
+    const commissions = await api().get('/api/pt-sessions/commissions').set('Cookie', a.cookie);
+    expect(commissions.status).toBe(200);
+    expect(JSON.stringify(commissions.body)).not.toContain('4321');
+  });
+});
+
+describe('payouts', () => {
+  it('reports payouts for the caller\'s own trainers only', async () => {
+    const { a, b } = await twoGyms();
+    const made = await api().post('/api/trainers').set('Cookie', b.cookie).send({ name: 'B Coach' });
+    const trainerId = made.body.id ?? made.body.data?.id;
+    await api().post('/api/pt-sessions').set('Cookie', b.cookie).send({
+      memberId: b.member.id,
+      trainerId,
+      sessionDate: '2026-03-01',
+      priceCharged: 4321,
+    });
+
+    const res = await api().get('/api/payouts').set('Cookie', a.cookie);
+
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(res.body)).not.toContain('B Coach');
+    expect(JSON.stringify(res.body)).not.toContain(trainerId);
+  });
+});
+
+// Expenses are already covered end to end in expenses.integration.test.ts
+// ("never touches another gym's expenses", "shows one gym nothing of
+// another's", "never counts another gym's money"), so they are not repeated
+// here.
+
+describe('reports', () => {
+  it('reports attendance for the caller\'s own gym only', async () => {
+    const { a, b } = await twoGyms();
+    // Attendance recorded in B only. The analytics query is raw SQL, so its
+    // scoping is checked here rather than inferred from the ORM.
+    await api().post('/api/attendance').set('Cookie', b.cookie).send({ memberId: b.member.id });
+
+    const res = await api().get('/api/analytics/attendance').set('Cookie', a.cookie);
+
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(res.body)).not.toContain(b.member.id);
+    expect(JSON.stringify(res.body)).not.toContain('Bob');
+  });
+});
+
 describe('dashboard', () => {
   it('counts only the caller\'s own gym', async () => {
     const { a, b } = await twoGyms();

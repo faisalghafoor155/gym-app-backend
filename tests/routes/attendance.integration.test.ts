@@ -233,3 +233,109 @@ describe('POST /api/attendance/checkin — scoping', () => {
     expect(second.status).toBe(201);
   });
 });
+
+/**
+ * Suspended and deactivated members at the desk.
+ *
+ * Check-in deliberately gates on nothing: the controller looks up the member,
+ * reports the standing, and writes the row. These pin that down, because
+ * "suspended members can still walk in" is a policy decision rather than an
+ * oversight, and a future status gate should have to change a test that says
+ * so out loud rather than slipping past a suite that never asked.
+ */
+describe('POST /api/attendance/checkin — members who are not in good standing', () => {
+  it('lets a suspended membership in, and reports it as suspended', async () => {
+    const owner = await makeGym();
+    const member = await addMember(owner.gymId);
+    await addMembership(owner.gymId, member.id, { expiresInDays: 20, status: 'suspended' });
+
+    const res = await api().post('/api/attendance/checkin')
+      .set('Cookie', owner.cookie).send({ memberId: member.id });
+
+    expect(res.status).toBe(201);
+    // Suspended is not superseded or cancelled, so it is still the member's
+    // current membership and travels back with the response.
+    expect(res.body.membership).not.toBeNull();
+    expect(res.body.membership.status).toBe('suspended');
+    expect(await prisma.attendance.count()).toBe(1);
+  });
+
+  it('reports no membership at all once it has been cancelled', async () => {
+    const owner = await makeGym();
+    const member = await addMember(owner.gymId);
+    await addMembership(owner.gymId, member.id, { expiresInDays: 20, status: 'cancelled' });
+
+    const res = await api().post('/api/attendance/checkin')
+      .set('Cookie', owner.cookie).send({ memberId: member.id });
+
+    expect(res.status).toBe(201);
+    // A called-off membership is not the member's current one, so the desk is
+    // shown nothing rather than a cancelled row that still has days left on it.
+    expect(res.body.membership).toBeNull();
+  });
+
+  it('lets a hand-deactivated member in rather than turning them away', async () => {
+    const owner = await makeGym();
+    const member = await addMember(owner.gymId, { status: 'inactive' });
+    await addMembership(owner.gymId, member.id, { expiresInDays: 20 });
+
+    const res = await api().post('/api/attendance/checkin')
+      .set('Cookie', owner.cookie).send({ memberId: member.id });
+
+    expect(res.status).toBe(201);
+    expect(await prisma.attendance.count()).toBe(1);
+  });
+});
+
+describe('attendance stays inside its own gym', () => {
+  it('never shows one gym another gym\'s attendance', async () => {
+    const a = await makeGym({ gymName: 'A' });
+    const b = await makeGym({ gymName: 'B' });
+    const mine = await addMember(a.gymId, { name: 'Alice' });
+    const theirs = await addMember(b.gymId, { name: 'Bob' });
+
+    await api().post('/api/attendance/checkin').set('Cookie', a.cookie).send({ memberId: mine.id });
+    await api().post('/api/attendance/checkin').set('Cookie', b.cookie).send({ memberId: theirs.id });
+
+    const res = await api().get('/api/attendance/today').set('Cookie', a.cookie);
+
+    expect(res.status).toBe(200);
+    const rows = (res.body.data ?? res.body) as { memberId: string }[];
+    expect(rows).toHaveLength(1);
+    expect(rows[0].memberId).toBe(mine.id);
+    expect(JSON.stringify(res.body)).not.toContain('Bob');
+  });
+
+  it('will not read another gym\'s member history', async () => {
+    const a = await makeGym({ gymName: 'A' });
+    const b = await makeGym({ gymName: 'B' });
+    const theirs = await addMember(b.gymId, { name: 'Bob' });
+    await api().post('/api/attendance/checkin').set('Cookie', b.cookie).send({ memberId: theirs.id });
+
+    const res = await api().get(`/api/attendance/member/${theirs.id}`).set('Cookie', a.cookie);
+
+    // Either a refusal or an empty history is acceptable; leaking Bob's visits
+    // is not.
+    expect(JSON.stringify(res.body)).not.toContain('Bob');
+    if (res.status === 200) {
+      expect((res.body.data ?? res.body) as unknown[]).toHaveLength(0);
+    }
+  });
+
+  it('counts only its own gym on the day\'s tally', async () => {
+    const a = await makeGym({ gymName: 'A' });
+    const b = await makeGym({ gymName: 'B' });
+    const mine = await addMember(a.gymId);
+    for (let i = 0; i < 3; i++) {
+      const theirs = await addMember(b.gymId, { name: `B member ${i}` });
+      await api().post('/api/attendance/checkin').set('Cookie', b.cookie).send({ memberId: theirs.id });
+    }
+    await api().post('/api/attendance/checkin').set('Cookie', a.cookie).send({ memberId: mine.id });
+
+    const res = await api().get('/api/attendance/today').set('Cookie', a.cookie);
+
+    expect(res.status).toBe(200);
+    const rows = (res.body.data ?? res.body) as unknown[];
+    expect(rows).toHaveLength(1);
+  });
+});
