@@ -873,7 +873,19 @@ export const EXPENSE_CATEGORIES = [
 const expenseFields = {
   category: z.string().trim().min(1, 'is required').max(50, 'is too long'),
   amount: money.refine((v) => v > 0, 'must be greater than zero'),
-  spentOn: date,
+  /**
+   * Money already spent, so never a date still to come.
+   *
+   * Without this a mistyped year — 2099 for 2029 — is accepted and counted
+   * against today's profit, which is exactly the kind of wrong number nobody
+   * goes looking for. Measured against the end of today rather than the
+   * instant of the request, so a date-only value entered anywhere in the world
+   * still reads as today.
+   */
+  spentOn: date.refine(
+    (d) => d.getTime() <= new Date().setHours(23, 59, 59, 999),
+    'cannot be in the future',
+  ),
   vendor: optionalText(120),
   notes: optionalText(500),
 };

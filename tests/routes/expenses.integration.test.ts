@@ -84,6 +84,51 @@ describe('Expenses — CRUD', () => {
     expect(res.status).toBe(400);
   });
 
+  /**
+   * An expense is money already spent. A mistyped year — 2099 for 2029 — used
+   * to be accepted and counted against today's profit, which is exactly the
+   * kind of wrong number nobody goes looking for.
+   */
+  it('refuses a date that has not happened yet', async () => {
+    const owner = await makeGym();
+    const nextYear = new Date();
+    nextYear.setFullYear(nextYear.getFullYear() + 1);
+
+    for (const spentOn of ['2099-12-31', nextYear.toISOString().slice(0, 10)]) {
+      const res = await api()
+        .post('/api/expenses')
+        .set('Cookie', owner.cookie)
+        .send({ category: 'rent', amount: 100, spentOn });
+      expect(res.status, spentOn).toBe(400);
+    }
+    expect(await prisma.expense.count()).toBe(0);
+  });
+
+  it('still accepts one spent today', async () => {
+    const owner = await makeGym();
+
+    const res = await api()
+      .post('/api/expenses')
+      .set('Cookie', owner.cookie)
+      // Measured against the end of today, so a date-only value entered
+      // anywhere in the world still reads as today rather than as the future.
+      .send({ category: 'rent', amount: 100, spentOn: new Date().toISOString().slice(0, 10) });
+
+    expect(res.status).toBe(201);
+  });
+
+  it('applies the same date rule on update as on create', async () => {
+    const owner = await makeGym();
+    const expense = await addExpense(owner.gymId);
+
+    const res = await api()
+      .put(`/api/expenses/${expense.id}`)
+      .set('Cookie', owner.cookie)
+      .send({ spentOn: '2099-12-31' });
+
+    expect(res.status).toBe(400);
+  });
+
   it('updates an expense and logs what changed', async () => {
     const owner = await makeGym();
     const expense = await addExpense(owner.gymId, { amount: 50000 });
