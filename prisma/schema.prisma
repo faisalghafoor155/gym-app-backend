@@ -212,12 +212,17 @@ model Member {
   name  String
   email String?
   phone String?
-  /// Legacy: base64-encoded photo (deprecated, prefer photoUrl)
+  /// Legacy: base64-encoded photo, inline on the row. Written only when S3 is
+  /// not configured; prefer photoKey.
   photo String?
-  /// S3 key for the stored photo
+  /// S3 key for the stored photo.
+  ///
+  /// The key, and never a URL. The bucket is private, so the address a client
+  /// can actually fetch is signed per response and expires in minutes — see
+  /// services/s3.ts. A stored URL would be a permanent unauthenticated link to
+  /// a photograph of a person, which is what the photoUrl column used to be
+  /// before it was dropped.
   photoKey String?
-  /// Public URL of the photo on S3/CDN
-  photoUrl String?
 
   gender           String?
   dateOfBirth      DateTime?

@@ -4,6 +4,7 @@ import type { Response } from "express";
 import prisma from "../db.js";
 import { audit } from "../services/audit.js";
 import { activeDevice } from "../services/fingerprint/index.js";
+import { getPhotoUrl } from "../services/s3.js";
 import type { Template } from "../services/fingerprint/index.js";
 import type { AuthedRequest } from "../types.js";
 import type {
@@ -22,6 +23,22 @@ import type {
  * constraint settles — are stated once in `attendanceController` and cannot
  * drift out of step with a second copy here.
  */
+
+/**
+ * Swaps a stored photo key for a short-lived signed URL.
+ *
+ * The bucket is private, so an identified member's face is only reachable
+ * through a signature minted for this reply. `photoKey` never leaves the
+ * server — the client reads `photo`, as it always has.
+ */
+const signMemberPhoto = async <
+  T extends { photo: string | null; photoKey: string | null },
+>(
+  member: T,
+): Promise<Omit<T, "photoKey">> => {
+  const { photoKey, ...rest } = member;
+  return { ...rest, photo: member.photo ?? (await getPhotoUrl(photoKey)) };
+};
 
 /** What the desk is told when the reader is missing or unreachable. */
 const deviceUnavailable = (res: Response): void => {
@@ -298,7 +315,13 @@ export const identify = async (
     if (externalId) {
       const member = await prisma.member.findFirst({
         where: { id: externalId, gymId: req.gymId },
-        select: { id: true, name: true, photo: true, memberNo: true },
+        select: {
+          id: true,
+          name: true,
+          photo: true,
+          photoKey: true,
+          memberNo: true,
+        },
       });
       // A reader holding an id this gym does not have means its store has
       // drifted from the database — a member deleted here but never forgotten
@@ -307,7 +330,7 @@ export const identify = async (
         res.status(404).json({ matched: false, reason: "no_match" });
         return;
       }
-      res.json({ matched: true, member });
+      res.json({ matched: true, member: await signMemberPhoto(member) });
       return;
     }
 
@@ -354,14 +377,24 @@ export const identify = async (
 
     const member = await prisma.member.findFirst({
       where: { id: result.externalId, gymId: req.gymId },
-      select: { id: true, name: true, photo: true, memberNo: true },
+      select: {
+          id: true,
+          name: true,
+          photo: true,
+          photoKey: true,
+          memberNo: true,
+        },
     });
     if (!member) {
       res.status(404).json({ matched: false, reason: "no_match" });
       return;
     }
 
-    res.json({ matched: true, member, score: result.score });
+    res.json({
+      matched: true,
+      member: await signMemberPhoto(member),
+      score: result.score,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Server error" });

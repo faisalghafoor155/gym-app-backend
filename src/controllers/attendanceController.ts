@@ -2,14 +2,43 @@ import type { Response } from 'express';
 import { Prisma } from '@prisma/client';
 import prisma from '../db.js';
 import { currentMembershipWhere, toView, withPlan } from '../services/membership.js';
+import { getPhotoUrl } from '../services/s3.js';
 import type { AuthedRequest } from '../types.js';
 import type { CheckinBody, IdParam } from '../schemas.js';
 
 // `memberNo` travels with the rest because the desk reads it out to confirm
 // who is standing there — a name alone is ambiguous in a gym with two Ahmeds.
+//
+// `photoKey` comes too so the face can be signed on the way out: the bucket is
+// private, and `photo` alone is only populated for members whose picture
+// predates S3.
 const memberSummary = {
-  member: { select: { name: true, phone: true, photo: true, memberNo: true } },
+  member: {
+    select: {
+      name: true,
+      phone: true,
+      photo: true,
+      photoKey: true,
+      memberNo: true,
+    },
+  },
 } as const;
+
+/** A member summary with its face turned into a short-lived signed URL. */
+type WithMember = { member: { photo: string | null; photoKey: string | null } };
+
+const signMember = async <T extends WithMember>(row: T): Promise<T> => ({
+  ...row,
+  member: {
+    ...row.member,
+    // A legacy inline base64 photo is already a usable src; only a key needs
+    // signing. Either way the client reads one field, `photo`.
+    photo: row.member.photo ?? (await getPhotoUrl(row.member.photoKey)),
+  },
+});
+
+const signMembers = async <T extends WithMember>(rows: T[]): Promise<T[]> =>
+  Promise.all(rows.map(signMember));
 
 /** The window a check-in belongs to: midnight to midnight, local time. */
 const dayBounds = (now: Date): { start: Date; end: Date } => {
@@ -78,7 +107,7 @@ export const checkin = async (
     if (existing) {
       // 200 rather than 201: nothing was created. `alreadyCheckedIn` is what
       // lets the page say so instead of claiming a fresh arrival.
-      res.json({ ...existing, membership, alreadyCheckedIn: true });
+      res.json({ ...(await signMember(existing)), membership, alreadyCheckedIn: true });
       return;
     }
 
@@ -87,7 +116,11 @@ export const checkin = async (
         data: { memberId, gymId: req.gymId },
         include: memberSummary,
       });
-      res.status(201).json({ ...record, membership, alreadyCheckedIn: false });
+      res.status(201).json({
+        ...(await signMember(record)),
+        membership,
+        alreadyCheckedIn: false,
+      });
     } catch (err) {
       // The other half of the race the constraint exists for: both requests
       // passed the check above, and this one lost the insert. The member is
@@ -100,7 +133,7 @@ export const checkin = async (
           include: memberSummary,
         });
         if (winner) {
-          res.json({ ...winner, membership, alreadyCheckedIn: true });
+          res.json({ ...(await signMember(winner)), membership, alreadyCheckedIn: true });
           return;
         }
       }
@@ -123,7 +156,7 @@ export const getToday = async (req: AuthedRequest, res: Response): Promise<void>
       include: memberSummary,
       orderBy: { checkedInAt: 'desc' },
     });
-    res.json(records);
+    res.json(await signMembers(records));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });

@@ -4,14 +4,41 @@ import {
   S3Client,
   PutObjectCommand,
   DeleteObjectCommand,
+  GetObjectCommand,
   HeadBucketCommand,
 } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { v4 as uuidv4 } from "uuid";
 
 /**
- * S3 service for storing and managing member photos
- * Supports uploads, deletions, and generates signed URLs
+ * Member photos in S3.
+ *
+ * The bucket is private. Nothing here ever produces a URL that works without a
+ * signature, and the database never stores one.
+ *
+ * That is a deliberate reversal. The first version of this uploaded with
+ * public-read caching headers and saved
+ * `https://bucket.s3.region.amazonaws.com/photos/<id>/<uuid>.jpg` on the row —
+ * so a member's face was readable by anyone who had ever seen the link, forever,
+ * with no login and no way to revoke it. A photograph of a person is personal
+ * data; the uuid in the path is obscurity, not access control, and it leaks
+ * through browser history, referrer headers, and anything that proxies or caches
+ * the image.
+ *
+ * What replaces it: the row keeps only `photoKey`, and a URL is minted per
+ * response with a short expiry. A link that escapes stops working within
+ * minutes, and revoking access is just declining to sign the next one.
  */
+
+/**
+ * How long a signed photo URL stays valid.
+ *
+ * Long enough that a roster of faces finishes loading and a page can be left
+ * open briefly; short enough that a URL copied out of devtools is useless by the
+ * time it is used. It bounds the damage of a leaked link, so it is not a knob
+ * worth turning up for convenience.
+ */
+const SIGNED_URL_TTL_SECONDS = 300;
 
 let s3Client: S3Client | null = null;
 
@@ -70,15 +97,19 @@ export const verifyS3Bucket = async (): Promise<boolean> => {
 
 export interface UploadPhotoResult {
   key: string;
-  url: string;
 }
 
 /**
- * Upload a photo to S3
+ * Uploads a photo and returns its key.
+ *
+ * Only the key — there is deliberately no URL in the result. A URL that is
+ * worth storing is a URL that works without a signature, which is the thing
+ * this service exists to avoid. Callers persist the key and ask for a signed
+ * URL at read time.
+ *
  * @param buffer Image buffer (base64 decoded or binary)
  * @param filename Original filename or generated name
  * @param memberId Member ID for organizing photos
- * @returns S3 key and public URL
  */
 export const uploadPhoto = async (
   buffer: Buffer,
@@ -110,23 +141,59 @@ export const uploadPhoto = async (
         Key: key,
         Body: buffer,
         ContentType: contentType,
-        // Optional: Add caching headers for public photos
-        CacheControl: "public, max-age=31536000", // 1 year
+        // `private`, not `public`: the signed URL that serves this is unique
+        // per request, so a shared cache keyed on it would either never hit or
+        // hand one member's face to whoever asked next. The browser may hold it
+        // for the life of the signature and no longer.
+        CacheControl: `private, max-age=${SIGNED_URL_TTL_SECONDS}`,
       }),
     );
 
-    // Generate public URL (assuming bucket is public or using CloudFront)
-    const baseUrl =
-      process.env.S3_BASE_URL ||
-      `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com`;
-    const url = `${baseUrl}/${key}`;
-
-    return { key, url };
+    return { key };
   } catch (error) {
     console.error("Photo upload failed:", error);
     throw new Error("Failed to upload photo to S3");
   }
 };
+
+/**
+ * A short-lived URL for one stored photo.
+ *
+ * Returns null rather than throwing when there is nothing to sign or S3 is not
+ * configured: a missing face must degrade to the initials placeholder the UI
+ * already draws, never to a failed member list.
+ */
+export const getPhotoUrl = async (
+  photoKey: string | null | undefined,
+): Promise<string | null> => {
+  if (!photoKey || !isS3Configured()) return null;
+
+  try {
+    return await getSignedUrl(
+      getS3Client(),
+      new GetObjectCommand({
+        Bucket: process.env.S3_BUCKET_NAME!,
+        Key: photoKey,
+      }),
+      { expiresIn: SIGNED_URL_TTL_SECONDS },
+    );
+  } catch (error) {
+    console.error("Could not sign photo URL:", error);
+    return null;
+  }
+};
+
+/**
+ * Signs a batch of photos at once.
+ *
+ * A roster page holds fifty members, and signing is local computation — an
+ * HMAC, no network call — so this is a loop rather than anything cleverer. It
+ * exists so callers cannot accidentally await fifty signatures in series inside
+ * a `.map`, and so one unsignable key cannot fail the whole page.
+ */
+export const signPhotoUrls = async (
+  keys: readonly (string | null | undefined)[],
+): Promise<(string | null)[]> => Promise.all(keys.map(getPhotoUrl));
 
 /**
  * Delete a photo from S3

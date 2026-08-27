@@ -17,6 +17,7 @@ import {
   isS3Configured,
   uploadPhoto,
   deletePhoto,
+  getPhotoUrl,
   base64ToBuffer,
   extractFilename,
 } from "../services/s3.js";
@@ -48,7 +49,10 @@ const memberFields = {
   phone: true,
   photo: true,
   photoKey: true,
-  photoUrl: true,
+  // `photoUrl` is deliberately not selected. It held a permanent public S3 link
+  // back when the bucket was world-readable; it is now dead, and returning a
+  // stale one would hand out exactly the link this change exists to stop
+  // issuing. The URL clients get is signed per response from `photoKey`.
   gender: true,
   dateOfBirth: true,
   address: true,
@@ -108,6 +112,42 @@ const decorate = (
   };
 };
 
+/**
+ * `decorate`, plus a freshly signed photo URL.
+ *
+ * The bucket is private, so a photo is only ever reachable through a signature
+ * minted for this response and valid for minutes. `photoKey` is the durable
+ * thing on the row; the URL is derived, never stored — see services/s3.ts for
+ * why that reversal matters.
+ *
+ * The signed URL is served as `photo`, which is the field the clients already
+ * render, so nothing on the front end has to know whether a face came from S3
+ * or from the legacy inline base64 column.
+ *
+ * `photoKey` is stripped on the way out. It is the one input a URL is built
+ * from, so handing it to a client hands over the ingredient for exactly the
+ * unauthenticated link this change stopped issuing — and no client has any use
+ * for it, since the only thing it can be turned into is served here already.
+ */
+const decorateWithPhoto = async (
+  row: MemberRow,
+  now: Date = new Date(),
+): Promise<Omit<ReturnType<typeof decorate>, "photoKey">> => {
+  const { photoKey, ...member } = decorate(row, now);
+  return {
+    ...member,
+    // A legacy inline base64 photo is already a usable src and needs no signing.
+    photo: member.photo ?? (await getPhotoUrl(photoKey)),
+  };
+};
+
+/** The same, for a page of members. */
+const decorateAllWithPhotos = async (
+  rows: readonly MemberRow[],
+  now: Date = new Date(),
+): Promise<Omit<ReturnType<typeof decorate>, "photoKey">[]> =>
+  Promise.all(rows.map((r) => decorateWithPhoto(r, now)));
+
 const selectMember = {
   ...memberFields,
   memberships: currentMembership,
@@ -120,9 +160,12 @@ const selectMember = {
  * are the entire reason a full member list is expensive. A dropdown renders a
  * name, never a face, so leaving them out is what makes returning every member
  * affordable at all.
+ *
+ * `photoKey` goes with it — a picker that shows no face has no use for the key
+ * to one, and it is not a value to hand out for free.
  */
 const selectMemberLite = (() => {
-  const { photo: _photo, ...rest } = memberFields;
+  const { photo: _photo, photoKey: _photoKey, ...rest } = memberFields;
   return { ...rest, memberships: currentMembership } as const;
 })();
 
@@ -192,7 +235,10 @@ export const getAll = async (
       // the shape of what came back — only `hasMore` differs, and it cannot be
       // true here by definition.
       res.json({
-        data: members.map((m) => decorate({ ...m, photo: null }, now)),
+        // No face and no key: a picker renders a name, and neither is fetched.
+        data: members.map((m) =>
+          decorate({ ...m, photo: null, photoKey: null }, now),
+        ),
         total: members.length,
         page: 1,
         limit: members.length,
@@ -241,7 +287,7 @@ export const getAll = async (
       ]);
 
     res.json({
-      data: members.map((m) => decorate(m, now)),
+      data: await decorateAllWithPhotos(members, now),
       total,
       page,
       limit,
@@ -276,7 +322,7 @@ export const getOne = async (
       res.status(404).json({ error: "Member not found" });
       return;
     }
-    res.json(decorate(member));
+    res.json(await decorateWithPhoto(member));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Server error" });
@@ -362,17 +408,19 @@ export const create = async (
       }
     }
 
-    // Handle photo upload to S3 before creating member
-    let photoData: { photo?: string; photoKey?: string; photoUrl?: string } =
-      {};
+    // Handle photo upload to S3 before creating member.
+    //
+    // Only the key is kept. The bucket is private, so there is no URL worth
+    // storing — one is signed per response instead.
+    let photoData: { photo?: string; photoKey?: string } = {};
     if (photo && isS3Configured()) {
       try {
         // Generate a temporary ID for the filename
         const tempId = `new-${Date.now()}`;
         const buffer = base64ToBuffer(photo);
         const filename = extractFilename(photo, `member-${tempId}`);
-        const { key, url } = await uploadPhoto(buffer, filename, tempId);
-        photoData = { photoKey: key, photoUrl: url };
+        const { key } = await uploadPhoto(buffer, filename, tempId);
+        photoData = { photoKey: key };
       } catch (uploadError) {
         console.error("Photo upload failed:", uploadError);
         res.status(400).json({ error: "Failed to upload photo" });
@@ -498,7 +546,7 @@ export const create = async (
       where: { id: member.id },
       select: selectMember,
     });
-    const view = decorate(full);
+    const view = await decorateWithPhoto(full);
 
     await audit(req, {
       action: "member.create",
@@ -579,7 +627,6 @@ export const update = async (
     let photoData: {
       photo?: string | null;
       photoKey?: string | null;
-      photoUrl?: string | null;
     } = {};
 
     // Handle photo upload to S3 if provided and S3 is configured
@@ -589,20 +636,20 @@ export const update = async (
         if (existing.photoKey) {
           await deletePhoto(existing.photoKey);
         }
-        photoData = { photo: null, photoKey: null, photoUrl: null };
+        photoData = { photo: null, photoKey: null };
       } else if (photo && isS3Configured()) {
         // Upload new photo to S3
         try {
           const buffer = base64ToBuffer(photo);
           const filename = extractFilename(photo, `member-${id}`);
-          const { key, url } = await uploadPhoto(buffer, filename, id);
+          const { key } = await uploadPhoto(buffer, filename, id);
 
           // Delete old photo if exists
           if (existing.photoKey) {
             await deletePhoto(existing.photoKey);
           }
 
-          photoData = { photo: null, photoKey: key, photoUrl: url };
+          photoData = { photo: null, photoKey: key };
         } catch (uploadError) {
           console.error("Photo upload failed:", uploadError);
           res.status(400).json({ error: "Failed to upload photo" });
@@ -696,7 +743,7 @@ export const update = async (
       });
     }
 
-    res.json(decorate(full));
+    res.json(await decorateWithPhoto(full));
   } catch (err) {
     if (err instanceof DuplicateMemberError) {
       respondDuplicate(res, err.hit);

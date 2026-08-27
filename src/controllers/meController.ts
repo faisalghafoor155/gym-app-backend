@@ -4,6 +4,7 @@ import type { Response } from "express";
 import prisma from "../db.js";
 import { toView, withPlan } from "../services/membership.js";
 import { sum, withMoney } from "../services/money.js";
+import { getPhotoUrl } from "../services/s3.js";
 import type { AuthedRequest } from "../types.js";
 
 const buildMyProfileResponse = async (memberId: string) => {
@@ -17,6 +18,7 @@ const buildMyProfileResponse = async (memberId: string) => {
         email: true,
         phone: true,
         photo: true,
+        photoKey: true,
         gender: true,
         dateOfBirth: true,
         address: true,
@@ -50,11 +52,14 @@ const buildMyProfileResponse = async (memberId: string) => {
     return null;
   }
 
-  const { memberships, ...profile } = member;
+  const { memberships, photoKey, ...profile } = member;
 
   return {
     member: {
       ...profile,
+      // The bucket is private, so the member's own face is signed for this
+      // reply and expires with it. `photoKey` stays server-side.
+      photo: profile.photo ?? (await getPhotoUrl(photoKey)),
       currentMembership: memberships[0] ? toView(memberships[0]) : null,
     },
     plan,

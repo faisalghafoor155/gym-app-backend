@@ -1,0 +1,16 @@
+-- Member photos are personal data, and this column was the leak.
+--
+-- It stored a permanent, unauthenticated S3 URL of the form
+-- https://<bucket>.s3.<region>.amazonaws.com/photos/<id>/<uuid>.jpg — readable
+-- by anyone who ever saw the link, with no login, no expiry and no way to
+-- revoke it. The uuid in the path was obscurity, not access control: such links
+-- escape through browser history, referrer headers, and any cache or proxy that
+-- touches the image.
+--
+-- The bucket is private now and URLs are signed per response with a few minutes
+-- of life, derived from "photoKey". Nothing reads this column any more.
+--
+-- Dropped rather than emptied on purpose. A nulled column is an invitation to
+-- start writing to it again, and the whole point is that a photo URL is no
+-- longer a thing that can be stored.
+ALTER TABLE "Member" DROP COLUMN IF EXISTS "photoUrl";

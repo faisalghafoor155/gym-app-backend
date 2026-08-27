@@ -138,7 +138,6 @@ describe('member photos', () => {
     const after = await prisma.member.findUniqueOrThrow({ where: { id: member.id } });
     expect(after.photo).toBeNull();
     expect(after.photoKey).toBeNull();
-    expect(after.photoUrl).toBeNull();
   });
 
   it('leaves the photo alone when the field is not sent', async () => {
@@ -177,6 +176,67 @@ describe('member photos', () => {
       .set('Cookie', owner.cookie).send({ photo: huge });
 
     expect(res.status).toBe(400);
+  });
+
+  /**
+   * The privacy guarantee, stated as tests.
+   *
+   * A member's face is personal data. It used to be served as a permanent
+   * public S3 link stored on the row, readable by anyone who had ever seen the
+   * URL and impossible to revoke. These pin the replacement down so it cannot
+   * quietly regress: the bucket address never appears in a response, and the
+   * key that would let someone construct one never leaves the server.
+   */
+  it('never returns a raw bucket URL for a photo', async () => {
+    const owner = await makeGym();
+    const member = await addMember(owner.gymId);
+    await api().put(`/api/members/${member.id}`)
+      .set('Cookie', owner.cookie).send({ photo: tinyGif });
+
+    const one = await api().get(`/api/members/${member.id}`).set('Cookie', owner.cookie);
+    const list = await api().get('/api/members').set('Cookie', owner.cookie);
+
+    // An unsigned s3 link has no expiry and no signature — the two things that
+    // make a photo URL safe to hand out at all.
+    for (const body of [one.body, list.body]) {
+      const json = JSON.stringify(body);
+      expect(json).not.toMatch(/\.s3[.-][a-z0-9-]*\.?amazonaws\.com/);
+      expect(json).not.toContain('X-Amz-Signature');
+    }
+  });
+
+  it('keeps the S3 key on the server', async () => {
+    const owner = await makeGym();
+    const member = await addMember(owner.gymId);
+    // Set directly: the test environment has no S3, so an upload would fall
+    // back to the inline column and never write a key.
+    await prisma.member.update({
+      where: { id: member.id },
+      data: { photoKey: 'photos/secret/abc123.jpg' },
+    });
+
+    const res = await api().get(`/api/members/${member.id}`).set('Cookie', owner.cookie);
+
+    expect(res.status).toBe(200);
+    // The key is what a URL would be built from. Handing it out would let a
+    // client reconstruct the very link this change stopped issuing.
+    expect(JSON.stringify(res.body)).not.toContain('photos/secret/abc123.jpg');
+  });
+
+  it('shows no face rather than a broken one when the photo cannot be signed', async () => {
+    const owner = await makeGym();
+    const member = await addMember(owner.gymId);
+    await prisma.member.update({
+      where: { id: member.id },
+      data: { photoKey: 'photos/orphaned/gone.jpg' },
+    });
+
+    const res = await api().get(`/api/members/${member.id}`).set('Cookie', owner.cookie);
+
+    // S3 is not configured here, so nothing can be signed. The roster must
+    // still load — the UI draws initials for a member with no picture.
+    expect(res.status).toBe(200);
+    expect(res.body.photo).toBeNull();
   });
 });
 
