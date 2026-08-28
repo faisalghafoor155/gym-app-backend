@@ -4,6 +4,11 @@ import type { Response } from "express";
 import prisma from "../db.js";
 import { audit } from "../services/audit.js";
 import { activeDevice } from "../services/fingerprint/index.js";
+import {
+  BiometricCryptoError,
+  decryptTemplate,
+  encryptTemplate,
+} from "../services/fingerprint/crypto.js";
 import { getPhotoUrl } from "../services/s3.js";
 import type { Template } from "../services/fingerprint/index.js";
 import type { AuthedRequest } from "../types.js";
@@ -22,6 +27,11 @@ import type {
  * means — one per day, the expired-membership warning, the race the unique
  * constraint settles — are stated once in `attendanceController` and cannot
  * drift out of step with a second copy here.
+ *
+ * Templates are encrypted before they reach the database and decrypted on the
+ * way out — see `services/fingerprint/crypto.ts` for why and how. This file is
+ * the only place that happens, so the plaintext exists here and nowhere else on
+ * the server.
  */
 
 /**
@@ -175,6 +185,11 @@ export const enroll = async (
     }
 
     const bytes = Buffer.from(template, "base64");
+    // Encrypted here rather than lower down: the device push below needs the
+    // plaintext, and keeping both in one scope makes it visible that only the
+    // sealed copy is what reaches Prisma.
+    const sealed = encryptTemplate(bytes, memberId);
+
     const existing = await prisma.fingerprintTemplate.findUnique({
       where: { memberId },
       select: { id: true },
@@ -185,13 +200,13 @@ export const enroll = async (
       create: {
         memberId,
         gymId: req.gymId,
-        template: bytes,
+        template: sealed,
         format,
         finger: finger ?? null,
         enrolledBy: req.actorName,
       },
       update: {
-        template: bytes,
+        template: sealed,
         format,
         finger: finger ?? null,
         enrolledBy: req.actorName,
@@ -230,6 +245,16 @@ export const enroll = async (
 
     res.status(existing ? 200 : 201).json(record);
   } catch (err) {
+    if (err instanceof BiometricCryptoError) {
+      // Boot refuses to start without a usable key, so reaching this means the
+      // environment changed under a running process. Worth its own message: the
+      // fix is an operator's, not a receptionist's.
+      console.error("[fingerprint] cannot encrypt template", err.message);
+      res.status(500).json({
+        error: "Fingerprints cannot be stored right now. BIOMETRIC_KEY is not usable.",
+      });
+      return;
+    }
     console.error(err);
     res.status(500).json({ error: "Server error" });
   }
@@ -358,13 +383,35 @@ export const identify = async (
       return;
     }
 
-    const result = await device.match(
-      probe,
-      enrolled.map((e) => ({
+    // A row that will not decrypt is a fault in the gym's configuration — a
+    // rotated-away key, a restored backup, a tampered row — and not a member
+    // failing to match. Silently dropping it from the candidate set would turn
+    // that fault into an enrolled member being quietly refused at the door
+    // every morning, with nothing anywhere saying why. So the first failure
+    // stops the whole request.
+    let candidates: { externalId: string; template: Template }[];
+    try {
+      candidates = enrolled.map((e) => ({
         externalId: e.memberId,
-        template: { data: Buffer.from(e.template), format: e.format },
-      })),
-    );
+        template: {
+          data: decryptTemplate(Buffer.from(e.template), e.memberId),
+          format: e.format,
+        },
+      }));
+    } catch (err) {
+      if (err instanceof BiometricCryptoError) {
+        console.error("[fingerprint] stored template unreadable", err.message);
+        res.status(500).json({
+          error:
+            "Stored fingerprints could not be read. Check that BIOMETRIC_KEY " +
+            "matches the one they were enrolled under.",
+        });
+        return;
+      }
+      throw err;
+    }
+
+    const result = await device.match(probe, candidates);
 
     if (!result.ok) {
       if (result.reason === "no_match") {

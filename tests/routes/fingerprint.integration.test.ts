@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import prisma from '../../src/db.js';
+import {
+  decryptTemplate,
+  encryptTemplate,
+} from '../../src/services/fingerprint/crypto.js';
 import { addMember, addUser, api, makeGym, resetDb } from '../helpers.js';
 
 /**
@@ -17,13 +21,18 @@ import { addMember, addUser, api, makeGym, resetDb } from '../helpers.js';
 
 beforeEach(resetDb);
 
-/** A stored enrolment, written straight in — the capture is the device's job. */
+/**
+ * A stored enrolment, written straight in — the capture is the device's job.
+ *
+ * Encrypted the same way the controller would, so a row written here is
+ * indistinguishable from one that arrived through the endpoint.
+ */
 const enrol = async (gymId: string, memberId: string, format = 'fake-v1') =>
   prisma.fingerprintTemplate.create({
     data: {
       gymId,
       memberId,
-      template: Buffer.from('template-bytes'),
+      template: encryptTemplate(Buffer.from('template-bytes'), memberId),
       format,
       finger: 'right thumb',
     },
@@ -80,10 +89,33 @@ describe('POST /api/fingerprint/enroll', () => {
     });
     expect(stored?.format).toBe('fake-v1');
     expect(stored?.finger).toBe('right thumb');
-    // Stored as the bytes that arrived, not as the base64 that carried them.
-    // Wrapped because Prisma hands `Bytes` back as a Uint8Array, whose own
-    // `toString` prints the byte values rather than decoding them.
-    expect(Buffer.from(stored!.template).toString()).toBe('some-template');
+    // Encrypted on the way in, and readable again only through the key. Wrapped
+    // because Prisma hands `Bytes` back as a Uint8Array.
+    expect(
+      decryptTemplate(Buffer.from(stored!.template), member.id).toString(),
+    ).toBe('some-template');
+  });
+
+  it('leaves no plaintext template in the database', async () => {
+    // The reason the encryption is here at all. A dump of this table, a replica
+    // or a stolen backup must not carry the template in the clear.
+    const owner = await makeGym();
+    const member = await addMember(owner.gymId);
+
+    await api().post('/api/fingerprint/enroll')
+      .set('Cookie', owner.cookie)
+      .send({
+        memberId: member.id,
+        template: Buffer.from('recognisable-finger').toString('base64'),
+        format: 'fake-v1',
+      });
+
+    const stored = await prisma.fingerprintTemplate.findUnique({
+      where: { memberId: member.id },
+    });
+    expect(
+      Buffer.from(stored!.template).includes(Buffer.from('recognisable-finger')),
+    ).toBe(false);
   });
 
   it('replaces rather than duplicating when a member enrols again', async () => {
@@ -105,7 +137,9 @@ describe('POST /api/fingerprint/enroll', () => {
     const stored = await prisma.fingerprintTemplate.findUnique({
       where: { memberId: member.id },
     });
-    expect(Buffer.from(stored!.template).toString()).toBe('second-attempt');
+    expect(
+      decryptTemplate(Buffer.from(stored!.template), member.id).toString(),
+    ).toBe('second-attempt');
   });
 
   it('refuses a member from another gym', async () => {

@@ -30,6 +30,7 @@ import expensesRoutes from "./routes/expenses.js";
 import analyticsRoutes from "./routes/analytics.js";
 import payoutsRoutes from "./routes/payouts.js";
 import { hasLiveGateway } from "./services/gateways/index.js";
+import { biometricKeyStatus } from "./services/fingerprint/crypto.js";
 import { startJobs } from "./jobs/index.js";
 
 // Fail loudly at boot rather than turning every login into a generic 500.
@@ -41,6 +42,16 @@ for (const key of ["JWT_SECRET", "DATABASE_URL"] as const) {
 }
 if (process.env.JWT_SECRET!.length < 32) {
   console.error("JWT_SECRET must be at least 32 characters");
+  process.exit(1);
+}
+
+// Biometric templates are encrypted with this, and a missing key must stop the
+// server rather than be discovered at the first enrolment. Checked even when no
+// reader is configured: a gym that buys one should find out on the deploy that
+// preceded it, not at the desk with a member's finger on the glass.
+const biometricKey = biometricKeyStatus();
+if (!biometricKey.ok) {
+  console.error(biometricKey.error);
   process.exit(1);
 }
 

@@ -68,4 +68,8 @@ export default async function setup(): Promise<void> {
   process.env.DATABASE_URL = testUrl;
   process.env.NODE_ENV = 'test';
   process.env.JWT_SECRET ??= 'test-secret-at-least-32-characters-long!!';
+  // A fixed 32-byte key so the suite can enrol and read back templates. Every
+  // run starts from an empty database, so nothing is ever encrypted under one
+  // run's key and read under another's.
+  process.env.BIOMETRIC_KEY ??= Buffer.alloc(32, 7).toString('base64');
 }
