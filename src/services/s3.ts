@@ -76,6 +76,37 @@ export const isS3Configured = (): boolean => {
 };
 
 /**
+ * Whether a photo may be stored inline on the row when S3 is absent.
+ *
+ * Only outside production. The `Member.photo` column holds a base64 data-URL —
+ * up to a couple of megabytes of image sitting in a row that every member list,
+ * every search and every backup then carries. It exists so a developer can work
+ * without AWS credentials, and that is the whole of its remit.
+ *
+ * In production the same code path is a trap rather than a convenience: forget
+ * one of the four AWS variables on a deploy and nothing fails, nothing is
+ * logged, and the gym quietly starts writing photographs into Postgres. By the
+ * time anyone notices — a slow roster, a backup that will not fit — the rows are
+ * already there, and getting them out means a migration rather than a config
+ * change.
+ *
+ * So production refuses the upload instead. A rejected photo is a message an
+ * operator can act on; a silently fattening database is not.
+ */
+export const canStorePhotoInline = (): boolean =>
+  process.env.NODE_ENV !== "production";
+
+/**
+ * Why a photo could not be stored, for the one case the caller must explain.
+ *
+ * Deliberately not thrown from `uploadPhoto`: this is a deployment fault, not a
+ * failed upload, and the two deserve different words at the front desk.
+ */
+export const photoStorageUnavailable =
+  "Photo storage is not configured. Set AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, " +
+  "AWS_REGION and S3_BUCKET_NAME, or save the member without a photo.";
+
+/**
  * Verify S3 bucket exists and is accessible
  */
 export const verifyS3Bucket = async (): Promise<boolean> => {

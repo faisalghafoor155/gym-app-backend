@@ -15,6 +15,8 @@ import {
 } from "../services/membership.js";
 import {
   isS3Configured,
+  canStorePhotoInline,
+  photoStorageUnavailable,
   uploadPhoto,
   deletePhoto,
   getPhotoUrl,
@@ -426,9 +428,14 @@ export const create = async (
         res.status(400).json({ error: "Failed to upload photo" });
         return;
       }
-    } else if (photo && !isS3Configured()) {
-      // Fallback to base64 storage if S3 not configured
+    } else if (photo && canStorePhotoInline()) {
+      // Development only — see `canStorePhotoInline`. In production this branch
+      // is closed and the request is refused below rather than quietly writing
+      // a couple of megabytes of base64 onto the row.
       photoData = { photo };
+    } else if (photo) {
+      res.status(503).json({ error: photoStorageUnavailable });
+      return;
     }
 
     const member = await prisma.$transaction(async (tx) => {
@@ -655,9 +662,14 @@ export const update = async (
           res.status(400).json({ error: "Failed to upload photo" });
           return;
         }
-      } else if (photo && !isS3Configured()) {
-        // Fallback to base64 storage if S3 not configured
+      } else if (photo && canStorePhotoInline()) {
+        // Development only — see `canStorePhotoInline`.
         photoData = { photo };
+      } else if (photo) {
+        // Refused rather than stored inline. Nothing has been written yet, so
+        // the member keeps the photo they already had.
+        res.status(503).json({ error: photoStorageUnavailable });
+        return;
       }
     }
 

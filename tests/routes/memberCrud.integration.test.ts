@@ -353,3 +353,115 @@ describe('deleting a member', () => {
     expect((second.body.member ?? second.body).memberNo).not.toBe(firstNo);
   });
 });
+
+describe('photo storage when S3 is absent', () => {
+  /**
+   * The inline-base64 path exists so a developer can work without AWS
+   * credentials. In production the same path is a trap: forget one of the four
+   * AWS variables on a deploy and photographs start going into Postgres rows
+   * quietly, and getting them back out is a migration rather than a config fix.
+   *
+   * NODE_ENV is 'test' throughout the suite, so the permissive branch is what
+   * runs by default; the production cases set it for one call and put it back.
+   */
+  const asProduction = async <T>(fn: () => Promise<T>): Promise<T> => {
+    const before = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      return await fn();
+    } finally {
+      process.env.NODE_ENV = before;
+    }
+  };
+
+  it('stores a photo inline outside production, so local work needs no AWS', async () => {
+    const owner = await makeGym();
+
+    const res = await api().post('/api/members').set('Cookie', owner.cookie)
+      .send({ name: 'Ali Khan', phone: '03004440001', photo: tinyGif });
+
+    expect(res.status).toBe(201);
+    const stored = await prisma.member.findFirst({ where: { name: 'Ali Khan' } });
+    expect(stored?.photo).toBe(tinyGif);
+  });
+
+  it('refuses the photo in production rather than writing it to the row', async () => {
+    const owner = await makeGym();
+
+    const res = await asProduction(() =>
+      api().post('/api/members').set('Cookie', owner.cookie)
+        .send({ name: 'Sana Malik', phone: '03004440002', photo: tinyGif }),
+    );
+
+    expect(res.status).toBe(503);
+    expect(res.body.error).toMatch(/S3_BUCKET_NAME/);
+    // And nothing was written: a half-created member would be worse than a
+    // refusal, because the desk would think the photo simply failed to attach.
+    expect(await prisma.member.count({ where: { name: 'Sana Malik' } })).toBe(0);
+  });
+
+  it('still creates a member without a photo in production', async () => {
+    // The refusal is about photo storage, not about members. A gym with no S3
+    // configured must still be able to run its front desk.
+    const owner = await makeGym();
+
+    const res = await asProduction(() =>
+      api().post('/api/members').set('Cookie', owner.cookie)
+        .send({ name: 'Usman Sheikh', phone: '03004440003' }),
+    );
+
+    expect(res.status).toBe(201);
+    expect(await prisma.member.count({ where: { name: 'Usman Sheikh' } })).toBe(1);
+  });
+
+  it('refuses a photo on update, leaving the member as they were', async () => {
+    const owner = await makeGym();
+    const member = await addMember(owner.gymId, { name: 'Zoya Raza' });
+
+    const res = await asProduction(() =>
+      api().put(`/api/members/${member.id}`).set('Cookie', owner.cookie)
+        .send({ name: 'Zoya Raza', photo: tinyGif }),
+    );
+
+    expect(res.status).toBe(503);
+    const after = await prisma.member.findUnique({ where: { id: member.id } });
+    expect(after?.photo).toBeNull();
+    expect(after?.name).toBe('Zoya Raza');
+  });
+
+  it('lets a member be edited without touching their photo in production', async () => {
+    // `photo` absent from the body is not the same as `photo: null`, and only
+    // the former should sail past the check.
+    const owner = await makeGym();
+    const member = await addMember(owner.gymId, { name: 'Saad Butt' });
+
+    const res = await asProduction(() =>
+      api().put(`/api/members/${member.id}`).set('Cookie', owner.cookie)
+        .send({ name: 'Saad Butt Jr' }),
+    );
+
+    expect(res.status).toBe(200);
+    const after = await prisma.member.findUnique({ where: { id: member.id } });
+    expect(after?.name).toBe('Saad Butt Jr');
+  });
+
+  it('still clears a photo in production, since that stores nothing', async () => {
+    // Removing a photo is the one photo operation that needs no storage at
+    // all, so refusing it would be refusing a member their own deletion.
+    const owner = await makeGym();
+    const member = await addMember(owner.gymId, { name: 'Hira Iqbal' });
+    await prisma.member.update({
+      where: { id: member.id },
+      data: { photo: tinyGif },
+    });
+
+    const res = await asProduction(() =>
+      api().put(`/api/members/${member.id}`).set('Cookie', owner.cookie)
+        .send({ name: 'Hira Iqbal', photo: null }),
+    );
+
+    expect(res.status).toBe(200);
+    const after = await prisma.member.findUnique({ where: { id: member.id } });
+    expect(after?.photo).toBeNull();
+  });
+});
