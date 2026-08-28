@@ -14,10 +14,15 @@
  *   npm run db:seed -- --gym APEX   # by name, when there is more than one
  *
  * Safe to run more than once: every run adds a fresh batch.
+ *
+ * Needs `BIOMETRIC_KEY` in the environment, the same as the server: fingerprint
+ * enrolments are encrypted on the way in, and seeding rows the app cannot read
+ * back would be worse than seeding none.
  */
 import 'dotenv/config';
 import { PrismaClient, type MembershipStatus } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
+import { encryptTemplate } from '../src/services/fingerprint/crypto.js';
 
 const prisma = new PrismaClient({
   adapter: new PrismaPg({ connectionString: process.env['DATABASE_URL']! }),
@@ -85,13 +90,21 @@ const COHORTS = [
   { kind: 'expiring', count: 18, startedDaysAgo: () => between(24, 29) },
   // Expired recently: the renewal call list.
   { kind: 'expired', count: 16, startedDaysAgo: () => between(33, 50) },
-  // Expired long enough that the app treats them as off the roster (60+ days).
+  // Expired long enough that the app treats them as off the roster (60+ days),
+  // but still inside the fingerprint retention window — their enrolment stays.
   { kind: 'lapsed', count: 11, startedDaysAgo: () => between(95, 140) },
+  // Gone long enough that fingerprint retention deletes their template: more
+  // than LAPSED_AFTER_DAYS + the grace window past expiry. On the 30-day plan
+  // that means starting at least 180 days ago. Kept as its own cohort so the
+  // retention job has something to actually find on a freshly seeded database
+  // — without these, the job runs and correctly reports nothing to do, which
+  // is indistinguishable from a job that is broken.
+  { kind: 'departed', count: 9, startedDaysAgo: () => between(200, 320) },
   // Registered but never sold anything — the "No membership" tab.
   { kind: 'none', count: 7, startedDaysAgo: () => 0 },
   // Bought, then called it off. Should never read as active anywhere.
   { kind: 'cancelled', count: 6, startedDaysAgo: () => between(10, 40) },
-] as const; // 100 members in total
+] as const; // 109 members in total
 
 const SUPPLEMENTS = [
   { name: 'Whey Protein 2lb', category: 'protein', price: 8500, stock: 14, dosage: '1 scoop', timing: 'Post-workout' },
@@ -352,6 +365,7 @@ async function main(): Promise<void> {
   let bookingsMade = 0;
   let salesMade = 0;
   let withTrainer = 0;
+  let enrolled = 0;
 
   for (const cohort of COHORTS) {
     for (let i = 0; i < cohort.count; i++) {
@@ -368,7 +382,8 @@ async function main(): Promise<void> {
       // About a third train with somebody. Lapsed members are left without —
       // they stopped coming, so a live trainer assignment would be odd.
       const trainer =
-        cohort.kind !== 'lapsed' && cohort.kind !== 'none' && rand() > 0.65
+        cohort.kind !== 'lapsed' && cohort.kind !== 'departed'
+        && cohort.kind !== 'none' && rand() > 0.65
           ? pick(trainers)
           : null;
 
@@ -453,7 +468,7 @@ async function main(): Promise<void> {
       // point is where the expiry falls relative to today, and a 365-day plan
       // picked at random would push it a year out and empty the tab.
       const datePinned = cohort.kind === 'expiring' || cohort.kind === 'expired'
-        || cohort.kind === 'lapsed';
+        || cohort.kind === 'lapsed' || cohort.kind === 'departed';
       const plan = datePinned ? monthly : pick(plans);
       const start = daysAgo(cohort.startedDaysAgo());
       const expiry = addDays(start, plan.durationDays);
@@ -512,7 +527,7 @@ async function main(): Promise<void> {
 
       // Attendance, thinning out for people on their way out — which is what
       // makes the dashboard's daily chart and peak-hour read like a real week.
-      const activeDays = cohort.kind === 'lapsed' ? 0
+      const activeDays = cohort.kind === 'lapsed' || cohort.kind === 'departed' ? 0
         : cohort.kind === 'expired' ? between(2, 8)
         : between(10, 40);
 
@@ -529,6 +544,34 @@ async function main(): Promise<void> {
           data: { gymId: gym.id, memberId: member.id, checkedInAt: at },
         });
         checkins++;
+      }
+
+      // Fingerprint enrolment, for about half the roster.
+      //
+      // Encrypted through the same helper the enrolment endpoint uses, never
+      // written raw: a seeded row the app cannot decrypt would look like a
+      // corrupt enrolment and send somebody hunting a bug that is not there.
+      // The bytes themselves are nonsense — no real reader produced them, and
+      // nothing matches against them until one is plugged in.
+      //
+      // Enrolled on the day they joined, which is what the retention job
+      // measures for a member who never bought anything.
+      if (rand() > 0.5) {
+        await prisma.fingerprintTemplate.create({
+          data: {
+            gymId: gym.id,
+            memberId: member.id,
+            template: encryptTemplate(
+              Buffer.from(`seed-template-${memberNo}`),
+              member.id,
+            ),
+            format: 'seed-v1',
+            finger: pick(['right thumb', 'left thumb', 'right index'] as const),
+            enrolledAt: daysAgo(cohort.startedDaysAgo()),
+            enrolledBy: 'Seed data',
+          },
+        });
+        enrolled++;
       }
 
       // Roughly half get a training and diet plan assigned.
@@ -629,6 +672,7 @@ async function main(): Promise<void> {
       `Done — ${created} members (${withTrainer} with a trainer)`,
       `${paymentsMade} payments`,
       `${checkins} check-ins`,
+      `${enrolled} fingerprints enrolled`,
       `${salesMade} supplement sales`,
       `${ptSessionsMade} PT sessions`,
       `${bookingsMade} class bookings`,
