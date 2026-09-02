@@ -31,8 +31,8 @@ describe('Trainers & PT Bookings API', () => {
       .set('Cookie', owner.cookie);
 
     expect(listRes.status).toBe(200);
-    expect(listRes.body.length).toBe(1);
-    expect(listRes.body[0].name).toBe('Zain Iqbal');
+    expect(listRes.body.data.length).toBe(1);
+    expect(listRes.body.data[0].name).toBe('Zain Iqbal');
 
     // 3. Update trainer
     const updateRes = await api()

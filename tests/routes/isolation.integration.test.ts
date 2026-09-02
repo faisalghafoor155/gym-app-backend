@@ -183,9 +183,8 @@ describe('supplements', () => {
     await addSupplement(b.gymId);
 
     const res = await api().get('/api/supplements').set('Cookie', a.cookie);
-    const rows = (res.body.supplements ?? res.body) as unknown[];
 
-    expect(rows).toHaveLength(1);
+    expect(res.body.data).toHaveLength(1);
   });
 
   it('will not sell from another gym\'s stock', async () => {

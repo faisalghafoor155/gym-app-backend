@@ -34,6 +34,52 @@ const wholeNumber = z.coerce
 // new Date("garbage") yields an Invalid Date that only blows up at the DB.
 const date = z.coerce.date({ error: "must be a valid date" });
 
+// Nothing in a list query may be required: the page loads with no filters at
+// all. Blank values are dropped rather than rejected, so an empty search box or
+// a cleared date input is a no-op instead of a 400.
+//
+// Lives with the shared primitives rather than under `members`, where it was
+// first written: every list query below now leans on it, and a helper used
+// file-wide that is declared halfway down is a temporal-dead-zone error waiting
+// for the next schema added above it.
+const blankToUndefined = z.literal("").transform(() => undefined);
+
+/**
+ * The page and limit every list query carries.
+ *
+ * Spread into a list's own schema rather than extended from it, so a query
+ * keeps reading as one flat object and its filters sit alongside its paging
+ * instead of behind a `.merge()`. The ceiling is what stops a caller asking
+ * for the whole table back through the page parameter — the same cap the
+ * members and audit-log queries have always used.
+ *
+ * `max` is a parameter because the right ceiling is not the same everywhere:
+ * a roster is read a screen at a time, while the monthly collection is read
+ * as a sheet and already allows 200.
+ */
+const pageParams = (max = 100, fallback = 25) => ({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(max).default(fallback),
+});
+
+/**
+ * Opt out of paging and return every row.
+ *
+ * For the pickers that need a complete list: a trainer dropdown cannot offer
+ * only the first 25 trainers, and a class picker that stopped at 25 would hide
+ * the class the front desk is booking. Deliberately explicit rather than the
+ * default — a caller asking for everything should have to say so, so the
+ * expensive shape is the one you choose rather than the one you get by
+ * forgetting.
+ *
+ * Written the same way as `memberQuerySchema.all`, which this generalises:
+ * query strings carry "true"/"false", not booleans.
+ */
+const allFlag = z
+  .enum(["true", "false"])
+  .optional()
+  .transform((v) => v === "true");
+
 export const GENDERS = ["male", "female", "other"] as const;
 export const PAYMENT_METHODS = ["cash", "online"] as const;
 
@@ -167,12 +213,29 @@ export const updateUserSchema = z.object({
 
 export const transferOwnershipSchema = z.object({ userId: uuid });
 
-// --- members -----------------------------------------------------------
+/**
+ * The team list.
+ *
+ * Paged like the rest, though a gym's staff list is the one here least likely
+ * to need it — the seat cap keeps it small. It is paged anyway because "small"
+ * is a property of today's data rather than of the endpoint, and the page
+ * already knows how to ask for more.
+ */
+export const userQuerySchema = z.object({
+  search: z
+    .string()
+    .trim()
+    .max(100, "is too long")
+    .transform((v) => v || undefined)
+    .optional(),
+  role: z
+    .enum(["owner", "staff", "member"], { error: "is not a role" })
+    .or(blankToUndefined)
+    .optional(),
+  ...pageParams(),
+});
 
-// Nothing in a list query may be required: the page loads with no filters at
-// all. Blank values are dropped rather than rejected, so an empty search box or
-// a cleared date input is a no-op instead of a 400.
-const blankToUndefined = z.literal("").transform(() => undefined);
+// --- members -----------------------------------------------------------
 
 // A birth date in the future is a typo, and nobody is 120.
 const birthDate = z.coerce
@@ -436,6 +499,15 @@ export const membershipPlanQuerySchema = z.object({
     .enum(["true", "false"])
     .optional()
     .transform((v) => v === "true"),
+  ...pageParams(),
+  // The renewal and sale forms both offer every plan a gym sells; a dropdown
+  // that stopped at 25 would hide the one being sold.
+  all: allFlag,
+});
+
+/** A member's own membership history — one member's rows, newest first. */
+export const membershipHistoryQuerySchema = z.object({
+  ...pageParams(),
 });
 
 // --- memberships -------------------------------------------------------
@@ -760,6 +832,31 @@ export const restockSupplementSchema = z.object({
   notes: optionalText(500),
 });
 
+/**
+ * The stock list.
+ *
+ * `search` and `category` are here rather than left to the browser because the
+ * list is paged now: filtering what one page happened to contain would quietly
+ * search a fraction of the shelf. The category counts the page renders are
+ * still taken over the whole filtered set, in the controller.
+ */
+export const supplementQuerySchema = z.object({
+  search: z
+    .string()
+    .trim()
+    .max(100, "is too long")
+    .transform((v) => v || undefined)
+    .optional(),
+  category: z
+    .enum(SUPPLEMENT_CATEGORIES, { error: "is not a valid category" })
+    .or(blankToUndefined)
+    .optional(),
+  ...pageParams(),
+  // The POS cart offers every product; a picker that stopped at 25 would hide
+  // stock the counter is trying to sell.
+  all: allFlag,
+});
+
 /** How many months of history the sales report covers. */
 export const salesReportQuerySchema = z.object({
   months: z.coerce.number().int().min(1).max(24).default(6),
@@ -825,6 +922,81 @@ export const createTrainerSchema = z.object({
 
 export const updateTrainerSchema = createTrainerSchema.partial();
 
+/**
+ * The trainer list.
+ *
+ * `all` matters more here than on most lists: the members page, the classes
+ * page and the PT form all render a trainer dropdown, and a gym with more
+ * trainers than one page would find the rest simply missing from the picker.
+ */
+export const trainerQuerySchema = z.object({
+  search: z
+    .string()
+    .trim()
+    .max(100, "is too long")
+    .transform((v) => v || undefined)
+    .optional(),
+  /** Retired trainers are kept — sessions they took still have to resolve —
+   *  but are off the default list rather than mixed in with working staff. */
+  includeInactive: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((v) => v === "true"),
+  ...pageParams(),
+  all: allFlag,
+});
+
+/**
+ * What each trainer is owed.
+ *
+ * Deliberately not `trainerQuerySchema`: that one hides retired trainers by
+ * default, which is right for a list of who is on the floor and wrong for a
+ * list of who is still owed money. Leaving does not forfeit commission already
+ * earned, so this list covers everyone and narrows only when asked — the
+ * opposite default, under a name that says which way round it is.
+ */
+export const payoutQuerySchema = z.object({
+  search: z
+    .string()
+    .trim()
+    .max(100, "is too long")
+    .transform((v) => v || undefined)
+    .optional(),
+  /** Narrows to trainers still working here, hiding anyone owed a final
+   *  settlement. Off by default, for the reason above. */
+  activeOnly: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((v) => v === "true"),
+  ...pageParams(),
+  all: allFlag,
+});
+
+/**
+ * The PT session log.
+ *
+ * The filters were previously read straight off `req.query` with `typeof x ===
+ * 'string'` guards, which let anything through — `?status=nonsense` reached
+ * Prisma as a `where` that matched nothing, and read as an empty log rather
+ * than as a bad request. They are enumerated here for the same reason every
+ * other list validates its query.
+ */
+export const ptSessionQuerySchema = z.object({
+  trainerId: uuid.or(blankToUndefined).optional(),
+  memberId: uuid.or(blankToUndefined).optional(),
+  status: z
+    .enum(["scheduled", "completed", "cancelled"], {
+      error: "is not a session status",
+    })
+    .or(blankToUndefined)
+    .optional(),
+  paymentStatus: z
+    .enum(["unpaid", "paid"], { error: "is not a payment status" })
+    .or(blankToUndefined)
+    .optional(),
+  ...pageParams(),
+});
+
 export const createPtSessionSchema = z.object({
   memberId: uuid,
   trainerId: uuid,
@@ -843,6 +1015,23 @@ export const updatePtSessionSchema = z.object({
 export const createClassSchema = z.object({
   name: name,
   description: optionalText(500),
+});
+
+/**
+ * The class catalogue.
+ *
+ * `all` is what the timetable uses: the schedule form picks a class from a
+ * dropdown, and a gym cannot schedule a class the picker declined to list.
+ */
+export const classQuerySchema = z.object({
+  search: z
+    .string()
+    .trim()
+    .max(100, "is too long")
+    .transform((v) => v || undefined)
+    .optional(),
+  ...pageParams(),
+  all: allFlag,
 });
 
 export const createClassScheduleSchema = z
@@ -870,6 +1059,34 @@ export const createClassScheduleSchema = z
     },
     { path: ["endTime"], error: "must be after the start time" },
   );
+
+/**
+ * The bookings list.
+ *
+ * `date` is normalised to midnight here rather than in the controller, which
+ * is where that used to live. It has to happen somewhere: a booking is stored
+ * against a bare day, so `?date=2026-08-24T18:00` would otherwise miss every
+ * row for the 24th and read as an empty timetable rather than as a filter that
+ * did not match the stored shape.
+ */
+export const classBookingQuerySchema = z.object({
+  memberId: uuid.or(blankToUndefined).optional(),
+  scheduleId: uuid.or(blankToUndefined).optional(),
+  date: date
+    .or(blankToUndefined)
+    .optional()
+    .transform((d) => {
+      if (!d) return undefined;
+      const day = new Date(d);
+      day.setHours(0, 0, 0, 0);
+      return day;
+    }),
+  status: z
+    .enum(["booked", "attended", "cancelled"], { error: "is not a status" })
+    .or(blankToUndefined)
+    .optional(),
+  ...pageParams(),
+});
 
 export const createClassBookingSchema = z.object({
   scheduleId: uuid,
@@ -1045,6 +1262,7 @@ export type CreateMemberLoginBody = z.infer<typeof createMemberLoginSchema>;
 export type AcceptInviteBody = z.infer<typeof acceptInviteSchema>;
 export type UpdateUserBody = z.infer<typeof updateUserSchema>;
 export type TransferOwnershipBody = z.infer<typeof transferOwnershipSchema>;
+export type UserQuery = z.infer<typeof userQuerySchema>;
 export type CreateMemberBody = z.infer<typeof createMemberSchema>;
 export type UpdateMemberBody = z.infer<typeof updateMemberSchema>;
 export type MemberQuery = z.infer<typeof memberQuerySchema>;
@@ -1057,6 +1275,9 @@ export type UpdateMembershipPlanBody = z.infer<
   typeof updateMembershipPlanSchema
 >;
 export type MembershipPlanQuery = z.infer<typeof membershipPlanQuerySchema>;
+export type MembershipHistoryQuery = z.infer<
+  typeof membershipHistoryQuerySchema
+>;
 export type CreateMembershipBody = z.infer<typeof createMembershipSchema>;
 export type RenewMembershipBody = z.infer<typeof renewMembershipSchema>;
 export type MembershipParams = z.infer<typeof membershipParams>;
@@ -1080,17 +1301,23 @@ export type SellSupplementBody = z.infer<typeof sellSupplementSchema>;
 export type CheckoutCartBody = z.infer<typeof checkoutCartSchema>;
 export type RestockSupplementBody = z.infer<typeof restockSupplementSchema>;
 export type SalesReportQuery = z.infer<typeof salesReportQuerySchema>;
+export type SupplementQuery = z.infer<typeof supplementQuerySchema>;
 export type IdParam = z.infer<typeof idParam>;
 export type TrainerIdParam = z.infer<typeof trainerIdParam>;
 
 export type CreateTrainerBody = z.infer<typeof createTrainerSchema>;
+export type TrainerQuery = z.infer<typeof trainerQuerySchema>;
+export type PayoutQuery = z.infer<typeof payoutQuerySchema>;
 export type UpdateTrainerBody = z.infer<typeof updateTrainerSchema>;
 export type CreatePtSessionBody = z.infer<typeof createPtSessionSchema>;
+export type PtSessionQuery = z.infer<typeof ptSessionQuerySchema>;
 export type UpdatePtSessionBody = z.infer<typeof updatePtSessionSchema>;
 
 export type CreateClassBody = z.infer<typeof createClassSchema>;
+export type ClassQuery = z.infer<typeof classQuerySchema>;
 export type CreateClassScheduleBody = z.infer<typeof createClassScheduleSchema>;
 export type CreateClassBookingBody = z.infer<typeof createClassBookingSchema>;
+export type ClassBookingQuery = z.infer<typeof classBookingQuerySchema>;
 export type UpdateClassBookingBody = z.infer<typeof updateClassBookingSchema>;
 
 export type CreateExpenseBody = z.infer<typeof createExpenseSchema>;

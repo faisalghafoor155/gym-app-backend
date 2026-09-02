@@ -2,21 +2,47 @@ import type { Response } from 'express';
 import prisma from '../db.js';
 import { audit } from '../services/audit.js';
 import type { AuthedRequest } from '../types.js';
-import type { CreateClassBody, CreateClassScheduleBody, IdParam } from '../schemas.js';
+import type {
+  CreateClassBody, CreateClassScheduleBody, ClassQuery, IdParam,
+} from '../schemas.js';
 
 /**
  * Returns all group classes.
  */
 export const getAll = async (
-  req: AuthedRequest,
+  req: AuthedRequest<Record<string, string>, unknown, unknown, ClassQuery>,
   res: Response,
 ): Promise<void> => {
+  const { search, page, limit, all } = req.query;
   try {
-    const classes = await prisma.class.findMany({
-      where: { gymId: req.gymId },
-      orderBy: { name: 'asc' },
+    const where = {
+      gymId: req.gymId,
+      ...(search && {
+        OR: [
+          { name: { contains: search, mode: 'insensitive' as const } },
+          { description: { contains: search, mode: 'insensitive' as const } },
+        ],
+      }),
+    };
+
+    const [classes, total] = await Promise.all([
+      prisma.class.findMany({
+        where,
+        orderBy: { name: 'asc' },
+        // The schedule form picks a class from a dropdown: one that stopped at
+        // the first page would make later classes impossible to timetable.
+        ...(all ? {} : { skip: (page - 1) * limit, take: limit }),
+      }),
+      prisma.class.count({ where }),
+    ]);
+
+    res.json({
+      data: classes,
+      total,
+      page: all ? 1 : page,
+      limit: all ? classes.length : limit,
+      hasMore: all ? false : page * limit < total,
     });
-    res.json(classes);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });

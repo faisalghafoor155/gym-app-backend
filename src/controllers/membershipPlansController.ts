@@ -11,16 +11,32 @@ export const getAll = async (
   req: AuthedRequest<Record<string, string>, unknown, unknown, MembershipPlanQuery>,
   res: Response,
 ): Promise<void> => {
+  const { includeInactive, page, limit, all } = req.query;
   try {
-    const plans = await prisma.membershipPlan.findMany({
-      where: {
-        gymId: req.gymId,
-        ...(req.query.includeInactive ? {} : { isActive: true }),
-      },
-      // Offered plans first, then retired ones, cheapest first within each.
-      orderBy: [{ isActive: 'desc' }, { durationDays: 'asc' }],
+    const where = {
+      gymId: req.gymId,
+      ...(includeInactive ? {} : { isActive: true }),
+    };
+
+    const [plans, total] = await Promise.all([
+      prisma.membershipPlan.findMany({
+        where,
+        // Offered plans first, then retired ones, cheapest first within each.
+        orderBy: [{ isActive: 'desc' }, { durationDays: 'asc' }],
+        // The sale and renewal forms both offer every plan the gym sells; one
+        // missing from the dropdown is one the front desk cannot sell.
+        ...(all ? {} : { skip: (page - 1) * limit, take: limit }),
+      }),
+      prisma.membershipPlan.count({ where }),
+    ]);
+
+    res.json({
+      data: plans.map(p => withMoney(p, 'price')),
+      total,
+      page: all ? 1 : page,
+      limit: all ? plans.length : limit,
+      hasMore: all ? false : page * limit < total,
     });
-    res.json(plans.map(p => withMoney(p, 'price')));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });

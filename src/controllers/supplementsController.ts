@@ -7,20 +7,85 @@ import { sum, withMoney } from '../services/money.js';
 import type { AuthedRequest } from '../types.js';
 import type {
   CreateSupplementBody, UpdateSupplementBody, SellSupplementBody,
-  CheckoutCartBody, RestockSupplementBody, SalesReportQuery, IdParam,
+  CheckoutCartBody, RestockSupplementBody, SalesReportQuery, SupplementQuery,
+  IdParam,
 } from '../schemas.js';
 
 /** Thrown when the guarded decrement finds the stock already gone, so the
  *  transaction rolls back instead of overselling. */
 class OutOfStockError extends Error {}
 
-export const getAll = async (req: AuthedRequest, res: Response): Promise<void> => {
+export const getAll = async (
+  req: AuthedRequest<Record<string, string>, unknown, unknown, SupplementQuery>,
+  res: Response,
+): Promise<void> => {
+  const { search, category, page, limit, all } = req.query;
   try {
-    const supplements = await prisma.supplement.findMany({
-      where: { gymId: req.gymId },
-      orderBy: { createdAt: 'desc' },
+    const where = {
+      gymId: req.gymId,
+      ...(category && { category }),
+      ...(search && {
+        OR: [
+          { name: { contains: search, mode: 'insensitive' as const } },
+          { description: { contains: search, mode: 'insensitive' as const } },
+        ],
+      }),
+    };
+
+    if (all) {
+      // The POS cart, which has to offer everything the gym stocks. Same
+      // envelope as the paged response so a caller never branches on shape.
+      const supplements = await prisma.supplement.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+      });
+      res.json({
+        data: supplements.map(s => withMoney(s, 'price')),
+        total: supplements.length,
+        page: 1,
+        limit: supplements.length,
+        hasMore: false,
+      });
+      return;
+    }
+
+    // The category chips and the out-of-stock tile both describe the whole
+    // shelf, not the page: a chip labelled with what happens to be on screen
+    // would climb as you pressed Show more. Counted against `searchWhere` so
+    // the chips keep narrowing the current search without narrowing themselves
+    // by the chip already selected — which would leave every other one at zero.
+    const searchWhere = { gymId: req.gymId, ...(where.OR && { OR: where.OR }) };
+
+    const [supplements, total, byCategory, outOfStock] = await Promise.all([
+      prisma.supplement.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      prisma.supplement.count({ where }),
+      prisma.supplement.groupBy({
+        by: ['category'],
+        where: searchWhere,
+        _count: { _all: true },
+      }),
+      prisma.supplement.count({ where: { ...searchWhere, stock: { lte: 0 } } }),
+    ]);
+
+    res.json({
+      data: supplements.map(s => withMoney(s, 'price')),
+      total,
+      page,
+      limit,
+      hasMore: page * limit < total,
+      counts: {
+        all: byCategory.reduce((n, c) => n + c._count._all, 0),
+        outOfStock,
+        byCategory: Object.fromEntries(
+          byCategory.map(c => [c.category, c._count._all]),
+        ),
+      },
     });
-    res.json(supplements.map(s => withMoney(s, 'price')));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });

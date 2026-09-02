@@ -41,9 +41,9 @@ describe('Payouts API', () => {
       .get('/api/payouts')
       .set('Cookie', accountant.cookie);
     expect(viewAccRes.status).toBe(200);
-    expect(viewAccRes.body.length).toBe(1);
-    expect(viewAccRes.body[0].trainerName).toBe('Sheraz');
-    expect(viewAccRes.body[0].unpaidCommission).toBe(2500);
+    expect(viewAccRes.body.data.length).toBe(1);
+    expect(viewAccRes.body.data[0].trainerName).toBe('Sheraz');
+    expect(viewAccRes.body.data[0].unpaidCommission).toBe(2500);
 
     // 2. Receptionist cannot view payouts (canViewPayments is true for receptionist, but wait, receptionist has canViewPayments: true. Let's make sure it checks permission)
     // Wait, let's verify if receptionist has canViewPayments in backend/src/services/permissions.ts:

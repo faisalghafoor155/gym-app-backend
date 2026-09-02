@@ -4,15 +4,17 @@ import { audit } from '../services/audit.js';
 import { addDays, renewalStart, toView, withPlan } from '../services/membership.js';
 import type { AuthedRequest } from '../types.js';
 import type {
-  CreateMembershipBody, RenewMembershipBody, IdParam, MembershipParams,
+  CreateMembershipBody, RenewMembershipBody, MembershipHistoryQuery,
+  IdParam, MembershipParams,
 } from '../schemas.js';
 
 /** Everything this member has ever bought, newest first. */
 export const getHistory = async (
-  req: AuthedRequest<IdParam>,
+  req: AuthedRequest<IdParam, unknown, unknown, MembershipHistoryQuery>,
   res: Response,
 ): Promise<void> => {
   const { id } = req.params;
+  const { page, limit } = req.query;
   try {
     const member = await prisma.member.findFirst({
       where: { id, gymId: req.gymId },
@@ -23,13 +25,28 @@ export const getHistory = async (
       return;
     }
 
-    const memberships = await prisma.membership.findMany({
-      where: { memberId: id, gymId: req.gymId },
-      include: withPlan,
-      orderBy: { createdAt: 'desc' },
-    });
+    const where = { memberId: id, gymId: req.gymId };
 
-    res.json(memberships.map(m => toView(m)));
+    // A long-standing member renewing monthly for years is exactly who this
+    // list is opened for, and theirs is the one it would be longest for.
+    const [memberships, total] = await Promise.all([
+      prisma.membership.findMany({
+        where,
+        include: withPlan,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      prisma.membership.count({ where }),
+    ]);
+
+    res.json({
+      data: memberships.map(m => toView(m)),
+      total,
+      page,
+      limit,
+      hasMore: page * limit < total,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });

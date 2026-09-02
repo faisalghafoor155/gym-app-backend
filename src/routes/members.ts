@@ -16,6 +16,7 @@ import {
   importMembersSchema,
   createMembershipSchema,
   renewMembershipSchema,
+  membershipHistoryQuerySchema,
 } from "../schemas.js";
 import {
   getAll,
@@ -80,6 +81,7 @@ router.delete(
 router.get(
   "/:id/memberships",
   validate(idParam, "params"),
+  validate(membershipHistoryQuerySchema, "query"),
   authed(getMembershipHistory),
 );
 router.post(

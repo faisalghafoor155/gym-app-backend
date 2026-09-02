@@ -2,37 +2,46 @@ import type { Response } from 'express';
 import prisma from '../db.js';
 import { audit } from '../services/audit.js';
 import type { AuthedRequest } from '../types.js';
-import type { CreatePtSessionBody, UpdatePtSessionBody, IdParam } from '../schemas.js';
+import type {
+  CreatePtSessionBody, UpdatePtSessionBody, PtSessionQuery, IdParam,
+} from '../schemas.js';
 import { sum } from '../services/money.js';
 
 /**
  * Returns list of PT sessions.
  */
 export const getAll = async (
-  req: AuthedRequest,
+  req: AuthedRequest<Record<string, string>, unknown, unknown, PtSessionQuery>,
   res: Response,
 ): Promise<void> => {
-  const { trainerId, memberId, status, paymentStatus } = req.query;
-  const trainerIdStr = typeof trainerId === 'string' ? trainerId : undefined;
-  const memberIdStr = typeof memberId === 'string' ? memberId : undefined;
-  const statusStr = typeof status === 'string' ? status : undefined;
-  const paymentStatusStr = typeof paymentStatus === 'string' ? paymentStatus : undefined;
+  // Validated by the route's schema rather than sniffed off `req.query` with
+  // `typeof` guards, which let anything through: `?status=nonsense` used to
+  // reach Prisma as a filter matching nothing, and read as an empty log rather
+  // than as the bad request it was.
+  const { trainerId, memberId, status, paymentStatus, page, limit } = req.query;
 
   try {
-    const sessions = await prisma.ptSession.findMany({
-      where: {
-        gymId: req.gymId,
-        ...(trainerIdStr && { trainerId: trainerIdStr }),
-        ...(memberIdStr && { memberId: memberIdStr }),
-        ...(statusStr && { status: statusStr }),
-        ...(paymentStatusStr && { paymentStatus: paymentStatusStr }),
-      },
-      include: {
-        member: { select: { id: true, name: true, memberNo: true } },
-        trainer: { select: { id: true, name: true, specialization: true } },
-      },
-      orderBy: { sessionDate: 'desc' },
-    });
+    const where = {
+      gymId: req.gymId,
+      ...(trainerId && { trainerId }),
+      ...(memberId && { memberId }),
+      ...(status && { status }),
+      ...(paymentStatus && { paymentStatus }),
+    };
+
+    const [sessions, total] = await Promise.all([
+      prisma.ptSession.findMany({
+        where,
+        include: {
+          member: { select: { id: true, name: true, memberNo: true } },
+          trainer: { select: { id: true, name: true, specialization: true } },
+        },
+        orderBy: { sessionDate: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      prisma.ptSession.count({ where }),
+    ]);
 
     const result = sessions.map(s => ({
       id: s.id,
@@ -46,7 +55,13 @@ export const getAll = async (
       createdAt: s.createdAt,
     }));
 
-    res.json(result);
+    res.json({
+      data: result,
+      total,
+      page,
+      limit,
+      hasMore: page * limit < total,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });

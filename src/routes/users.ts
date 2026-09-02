@@ -6,7 +6,7 @@ import { requirePermission } from '../middleware/requirePermission.js';
 import { authed } from '../types.js';
 import {
   idParam, createStaffSchema, createMemberLoginSchema,
-  updateUserSchema, transferOwnershipSchema,
+  updateUserSchema, transferOwnershipSchema, userQuerySchema,
 } from '../schemas.js';
 import {
   getAll, createStaff, createMemberLogin, update, remove, transferOwnership,
@@ -18,7 +18,12 @@ router.use(auth);
 
 // Staff list and creating accounts is for the owner and anyone with the
 // 'canManageStaff' permission (usually a Manager).
-router.get('/', requirePermission('canManageStaff'), authed(getAll));
+router.get(
+  '/',
+  requirePermission('canManageStaff'),
+  validate(userQuerySchema, 'query'),
+  authed(getAll),
+);
 
 router.post('/staff', requirePermission('canManageStaff'), validate(createStaffSchema), authed(createStaff));
 router.post('/member-login', requirePermission('canManageStaff'), validate(createMemberLoginSchema), authed(createMemberLogin));

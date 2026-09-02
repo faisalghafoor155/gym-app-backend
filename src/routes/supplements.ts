@@ -14,6 +14,7 @@ import {
   checkoutCartSchema,
   restockSupplementSchema,
   salesReportQuerySchema,
+  supplementQuerySchema,
 } from "../schemas.js";
 import {
   getAll,
@@ -47,7 +48,7 @@ router.get(
   authed(salesReport),
 );
 
-router.get("/", authed(getAll));
+router.get("/", validate(supplementQuerySchema, "query"), authed(getAll));
 router.post(
   "/",
   requirePermission("canManageSupplements"),

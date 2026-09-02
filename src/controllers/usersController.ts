@@ -8,7 +8,7 @@ import type { AuthedRequest } from '../types.js';
 import { issueInvite } from '../services/invite.js';
 import type {
   CreateStaffBody, UpdateUserBody, CreateMemberLoginBody,
-  TransferOwnershipBody, IdParam,
+  TransferOwnershipBody, UserQuery, IdParam,
 } from '../schemas.js';
 
 const publicFields = {
@@ -59,25 +59,52 @@ const inviteInfo = (invite: { link: string; emailed: boolean } | null) => {
 };
 
 /** Everyone who can sign in to this gym, and how many staff seats are left. */
-export const getAll = async (req: AuthedRequest, res: Response): Promise<void> => {
+export const getAll = async (
+  req: AuthedRequest<Record<string, string>, unknown, unknown, UserQuery>,
+  res: Response,
+): Promise<void> => {
+  const { search, role, page, limit } = req.query;
   try {
-    const [users, seats] = await Promise.all([
+    const where = {
+      gymId: req.gymId,
+      ...(role && { role }),
+      ...(search && {
+        OR: [
+          { name: { contains: search, mode: 'insensitive' as const } },
+          { email: { contains: search, mode: 'insensitive' as const } },
+        ],
+      }),
+    };
+
+    const [users, total, seats] = await Promise.all([
       prisma.user.findMany({
-        where: { gymId: req.gymId },
+        where,
         select: { ...publicFields, member: { select: { id: true, name: true } } },
         orderBy: [{ role: 'asc' }, { createdAt: 'desc' }],
+        skip: (page - 1) * limit,
+        take: limit,
       }),
+      prisma.user.count({ where }),
       seatUsage(req.gymId),
     ]);
     // Seats travel with the list so the page can say "2 left" before the owner
     // fills in a form that would be refused. The server still refuses it —
-    // this is the courtesy, not the rule.
-    res.json({ users, seats });
+    // this is the courtesy, not the rule. Counted over the gym rather than the
+    // page or the filter: a seat is used whether or not the search found it.
+    res.json({
+      users,
+      seats,
+      total,
+      page,
+      limit,
+      hasMore: page * limit < total,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
   }
 };
+
 
 /** Raised when the gym has no staff seat left, so the transaction rolls back
  *  rather than creating a seventh account. */

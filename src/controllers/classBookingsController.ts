@@ -2,43 +2,50 @@ import type { Response } from 'express';
 import prisma from '../db.js';
 import { audit } from '../services/audit.js';
 import type { AuthedRequest } from '../types.js';
-import type { CreateClassBookingBody, UpdateClassBookingBody, IdParam } from '../schemas.js';
+import type {
+  CreateClassBookingBody, UpdateClassBookingBody, ClassBookingQuery, IdParam,
+} from '../schemas.js';
 
 /**
  * Returns all bookings for class schedules.
  */
 export const getAll = async (
-  req: AuthedRequest,
+  req: AuthedRequest<Record<string, string>, unknown, unknown, ClassBookingQuery>,
   res: Response,
 ): Promise<void> => {
-  const { memberId, scheduleId, date } = req.query;
-  const memberIdStr = typeof memberId === 'string' ? memberId : undefined;
-  const scheduleIdStr = typeof scheduleId === 'string' ? scheduleId : undefined;
-  // Normalised the same way the booking was when it was written, so a filter
-  // sent with a time on it still matches. Without this `?date=2026-08-24` and
-  // `?date=2026-08-24T18:00` disagree, and the second silently finds nothing.
-  const parsedDate = date ? new Date(String(date)) : undefined;
-  parsedDate?.setHours(0, 0, 0, 0);
+  // The filters are validated by the route's schema now, which is also where
+  // `date` is normalised to midnight — a booking is stored against a bare day,
+  // so a filter carrying a time would otherwise match nothing and read as an
+  // empty timetable rather than as a mismatched shape.
+  const { memberId, scheduleId, date, status, page, limit } = req.query;
 
   try {
-    const bookings = await prisma.classBooking.findMany({
-      where: {
-        gymId: req.gymId,
-        ...(memberIdStr && { memberId: memberIdStr }),
-        ...(scheduleIdStr && { scheduleId: scheduleIdStr }),
-        ...(parsedDate && { bookingDate: parsedDate }),
-      },
-      include: {
-        member: { select: { id: true, name: true, memberNo: true } },
-        schedule: {
-          include: {
-            class: { select: { name: true } },
-            trainer: { select: { name: true } },
+    const where = {
+      gymId: req.gymId,
+      ...(memberId && { memberId }),
+      ...(scheduleId && { scheduleId }),
+      ...(date && { bookingDate: date }),
+      ...(status && { status }),
+    };
+
+    const [bookings, total] = await Promise.all([
+      prisma.classBooking.findMany({
+        where,
+        include: {
+          member: { select: { id: true, name: true, memberNo: true } },
+          schedule: {
+            include: {
+              class: { select: { name: true } },
+              trainer: { select: { name: true } },
+            },
           },
         },
-      },
-      orderBy: { bookingDate: 'desc' },
-    });
+        orderBy: { bookingDate: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      prisma.classBooking.count({ where }),
+    ]);
 
     const result = bookings.map(b => ({
       id: b.id,
@@ -56,7 +63,13 @@ export const getAll = async (
       },
     }));
 
-    res.json(result);
+    res.json({
+      data: result,
+      total,
+      page,
+      limit,
+      hasMore: page * limit < total,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });

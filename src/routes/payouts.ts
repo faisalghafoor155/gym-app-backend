@@ -5,14 +5,19 @@ import { authed } from "../types.js";
 import { getTrainerPayouts, markPayoutAsPaid } from "../controllers/payoutController.js";
 import validate from "../middleware/validate.js";
 import { requirePermission } from "../middleware/requirePermission.js";
-import { trainerIdParam } from "../schemas.js";
+import { trainerIdParam, payoutQuerySchema } from "../schemas.js";
 
 const router = Router();
 
 router.use(auth);
 router.use(requireStaff);
 
-router.get("/", requirePermission("canViewPayments"), authed(getTrainerPayouts));
+router.get(
+  "/",
+  requirePermission("canViewPayments"),
+  validate(payoutQuerySchema, "query"),
+  authed(getTrainerPayouts),
+);
 router.post(
   "/:trainerId/pay",
   requirePermission("canManagePayments"),

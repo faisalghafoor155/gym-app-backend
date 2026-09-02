@@ -550,7 +550,7 @@ describe('Trainer ptFee round-trip', () => {
     expect(created.body.ptFee).toBe(8000);
 
     const list = await api().get('/api/trainers').set('Cookie', owner.cookie);
-    expect(list.body[0].ptFee).toBe(8000);
+    expect(list.body.data[0].ptFee).toBe(8000);
   });
 
   it('defaults to null, meaning the gym price applies', async () => {
