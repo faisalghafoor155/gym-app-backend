@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import prisma from '../../src/db.js';
 import { addMember, api, makeGym, resetDb } from '../helpers.js';
+import { ENTITLEMENTS } from '../../src/services/subscription.js';
+import { hasDevice } from '../../src/services/fingerprint/index.js';
+import { hasLiveGateway } from '../../src/services/gateways/index.js';
 
 beforeEach(resetDb);
 
@@ -438,12 +441,36 @@ describe('GET /subscription', () => {
 
 describe('gyms that existed before plans', () => {
   it('start on free only when nothing says otherwise', async () => {
-    // The schema default. The migration moved every *existing* gym to pro
+    // The schema default. The migration moved every *existing* gym to basic
     // instead — see the migration for why — but a gym created from here on
     // starts on the trial tier.
     const gym = await prisma.gym.create({
       data: { name: 'Brand new', ownerName: 'Someone' },
     });
     expect(gym.plan).toBe('free');
+  });
+
+  it('were moved to a tier that takes nothing away from them', async () => {
+    // The migration's choice of `basic`, pinned here because it is a decision
+    // rather than a detail: the tier existing gyms land on has to be one whose
+    // features they already had, or the deploy quietly switches something off
+    // at a gym that was using it.
+    //
+    // Read from the entitlements table rather than restated, so adding a
+    // feature to a higher tier cannot silently make this assertion stale.
+    const landing = ENTITLEMENTS.basic.features;
+
+    // Nothing reachable today is withheld. Biometrics needs a driver in
+    // `services/fingerprint` and online payments needs a configured gateway;
+    // neither exists, which is what makes `basic` safe to land on. If either
+    // ships, this test is the place that says the migration needs revisiting.
+    expect(hasDevice()).toBe(false);
+    expect(hasLiveGateway()).toBe(false);
+
+    // What the app *did* do for every gym before plans existed: staff seats,
+    // and nothing else gated.
+    expect(ENTITLEMENTS.basic.limits.staff).toBe(6);
+    expect(landing.whatsapp).toBe(true);
+    expect(landing.analytics).toBe(true);
   });
 });

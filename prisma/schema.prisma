@@ -98,8 +98,9 @@ model Gym {
   ownerName String
   phone     String?
   /// Which tier this gym is on. New gyms start on `free`; every gym that
-  /// existed before plans were enforced was moved to `pro`, so nothing a gym
-  /// was already doing stopped working the day this shipped.
+  /// existed before plans were enforced was moved to `basic`, which is the
+  /// tier that matches what the app already did — six staff seats was the
+  /// figure hardcoded for everyone before this.
   plan      GymPlan  @default(free)
   createdAt DateTime @default(now())
 
