@@ -5,6 +5,7 @@ import auth from "../middleware/auth.js";
 import validate from "../middleware/validate.js";
 import { requireStaff } from "../middleware/requireRole.js";
 import { requirePermission } from "../middleware/requirePermission.js";
+import { requireFeature } from "../middleware/requireFeature.js";
 import { authed } from "../types.js";
 import {
   idParam,
@@ -24,6 +25,13 @@ const router = Router();
 router.use(auth);
 router.use(requireStaff);
 
+/**
+ * Deliberately ungated. The Attendance tab asks this on every load to decide
+ * what to render, and a 402 here would leave it unable to tell "no reader is
+ * plugged in" from "your plan does not include one" — which are the two things
+ * this endpoint exists to distinguish. The controller reports the plan instead,
+ * so the page can offer an upgrade rather than a broken tab.
+ */
 router.get("/status", authed(getStatus));
 
 /**
@@ -34,6 +42,7 @@ router.get("/status", authed(getStatus));
 router.post(
   "/identify",
   requirePermission("canCheckIn"),
+  requireFeature("biometrics"),
   validate(identifyFingerprintSchema),
   authed(identify),
 );
@@ -51,14 +60,23 @@ router.post(
 router.post(
   "/capture",
   requirePermission("canManageMembers"),
+  requireFeature("biometrics"),
   authed(capture),
 );
 router.post(
   "/enroll",
   requirePermission("canManageMembers"),
+  requireFeature("biometrics"),
   validate(enrollFingerprintSchema),
   authed(enroll),
 );
+/**
+ * Not gated, unlike enrolment. A gym that downgrades still holds the templates
+ * it took, and deleting one is the *disposal* of a biometric — the one thing a
+ * member may always ask for and the one thing a plan must never stand between
+ * them and. Refusing this on a downgrade would trap fingerprints in the
+ * database with no way to remove them short of deleting the member.
+ */
 router.delete(
   "/:id",
   requirePermission("canManageMembers"),

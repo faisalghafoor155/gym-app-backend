@@ -73,12 +73,34 @@ enum MembershipStatus {
   superseded
 }
 
+/// What a gym has subscribed to, which decides its limits and which features
+/// it may use.
+///
+/// An enum rather than the free-text column this replaced: `plan` was a
+/// `String` defaulting to "free" that nothing ever read, so a typo would have
+/// been stored happily and silently granted nothing. The limits themselves
+/// live in `services/subscription.ts`, not here — a tier is an identity, and
+/// what it is worth is a business decision that changes without a migration.
+enum GymPlan {
+  /// Trial-sized. Enough to run a small gym's roster, with the costly features
+  /// off.
+  free
+  /// The everyday tier. Matches what every gym could do before plans existed.
+  basic
+  /// Unlimited roster, plus the features that cost real money to run —
+  /// WhatsApp, biometrics, and taking payments online.
+  pro
+}
+
 model Gym {
   id        String   @id @default(uuid())
   name      String
   ownerName String
   phone     String?
-  plan      String   @default("free")
+  /// Which tier this gym is on. New gyms start on `free`; every gym that
+  /// existed before plans were enforced was moved to `pro`, so nothing a gym
+  /// was already doing stopped working the day this shipped.
+  plan      GymPlan  @default(free)
   createdAt DateTime @default(now())
 
   /// What assigning a personal trainer costs, when the trainer has no fee of

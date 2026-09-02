@@ -5,6 +5,7 @@ import type { AuthedRequest } from '../types.js';
 import { addDays, toView, withPlan } from '../services/membership.js';
 import { audit } from '../services/audit.js';
 import { availableGateways, getGateway } from '../services/gateways/index.js';
+import { planFor, planHasFeature } from '../services/subscription.js';
 import type { CheckoutBody, ConfirmManualParams, ProviderParams } from '../schemas.js';
 
 /**
@@ -43,9 +44,18 @@ export const getPlans = async (req: AuthedRequest, res: Response): Promise<void>
 };
 
 /** Which providers this deployment can actually take money through. */
-export const getProviders = async (_req: AuthedRequest, res: Response): Promise<void> => {
+export const getProviders = async (req: AuthedRequest, res: Response): Promise<void> => {
+  // A gym whose plan excludes online payments is offered `manual` only: the
+  // member still asks to renew and the front desk still takes the cash, which
+  // is the flow every gym has whether or not a gateway is wired up. Returning
+  // the real gateways would render buttons that `checkout` then refuses.
+  const licensed = planHasFeature(await planFor(req.gymId), 'onlinePayments');
+  const gateways = licensed
+    ? availableGateways()
+    : availableGateways().filter((g) => g.provider === 'manual');
+
   res.json(
-    availableGateways().map((g) => ({
+    gateways.map((g) => ({
       provider: g.provider,
       label: g.label,
       /** `manual` needs different copy in the UI — it is a request, not a payment. */

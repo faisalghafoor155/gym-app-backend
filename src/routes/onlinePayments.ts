@@ -4,6 +4,7 @@ import auth from '../middleware/auth.js';
 import validate from '../middleware/validate.js';
 import { requireStaff } from '../middleware/requireRole.js';
 import { requirePermission } from '../middleware/requirePermission.js';
+import { requireFeature } from '../middleware/requireFeature.js';
 import { authed } from '../types.js';
 import { checkoutSchema, idParam, providerParams } from '../schemas.js';
 import {
@@ -44,7 +45,23 @@ router.use(auth);
 router.get('/plans', authed(getPlans));
 router.get('/providers', authed(getProviders));
 router.get('/my-intents', authed(myIntents));
-router.post('/checkout', validate(checkoutSchema), authed(checkout));
+/**
+ * Starting a checkout is the one action gated by the plan. The callback and
+ * return routes above are deliberately not — they are mounted before `auth`
+ * and carry a provider's signature rather than a session, and a gym that
+ * downgraded while a member was mid-payment must still be able to complete
+ * the payment that member has already made. Refusing a callback would take
+ * their money and never credit the membership.
+ *
+ * `confirmManual` below is likewise ungated: it settles a request the front
+ * desk is holding cash for, which is not an online payment at all.
+ */
+router.post(
+  '/checkout',
+  requireFeature('onlinePayments'),
+  validate(checkoutSchema),
+  authed(checkout),
+);
 
 /**
  * Settling a front-desk request is taking money, so it needs the same

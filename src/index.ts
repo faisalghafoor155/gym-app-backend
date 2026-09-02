@@ -29,6 +29,7 @@ import gymSettingsRoutes from "./routes/gymSettings.js";
 import expensesRoutes from "./routes/expenses.js";
 import analyticsRoutes from "./routes/analytics.js";
 import payoutsRoutes from "./routes/payouts.js";
+import subscriptionRoutes from "./routes/subscription.js";
 import { hasLiveGateway } from "./services/gateways/index.js";
 import { biometricKeyStatus } from "./services/fingerprint/crypto.js";
 import { startJobs } from "./jobs/index.js";
@@ -182,6 +183,7 @@ app.use("/api/gym-settings", gymSettingsRoutes);
 app.use("/api/expenses", expensesRoutes);
 app.use("/api/analytics", analyticsRoutes);
 app.use("/api/payouts", payoutsRoutes);
+app.use("/api/subscription", subscriptionRoutes);
 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });

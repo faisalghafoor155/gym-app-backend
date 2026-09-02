@@ -1,6 +1,9 @@
 import type { Response } from 'express';
 import prisma from '../db.js';
 import { audit } from '../services/audit.js';
+import {
+  claimPlace, planErrorResponse, PlanLimitError,
+} from '../services/subscription.js';
 import type { AuthedRequest } from '../types.js';
 import type {
   CreateTrainerBody, UpdateTrainerBody, TrainerQuery, IdParam,
@@ -87,15 +90,24 @@ export const create = async (
 ): Promise<void> => {
   const { name, phone, specialization, commissionPercentage, ptFee } = req.body;
   try {
-    const trainer = await prisma.trainer.create({
-      data: {
-        gymId: req.gymId,
-        name,
-        phone,
-        specialization,
-        commissionPercentage,
-        ptFee: ptFee ?? null,
-      },
+    const trainer = await prisma.$transaction(async tx => {
+      // Active trainers only, so a gym at its ceiling frees a place by
+      // retiring somebody who has left rather than by paying — `remove` here
+      // deactivates rather than deletes, which is what makes that possible.
+      await claimPlace(tx, req.gymId, 'trainers', t =>
+        t.trainer.count({ where: { gymId: req.gymId, isActive: true } }),
+      );
+
+      return tx.trainer.create({
+        data: {
+          gymId: req.gymId,
+          name,
+          phone,
+          specialization,
+          commissionPercentage,
+          ptFee: ptFee ?? null,
+        },
+      });
     });
 
     await audit(req, {
@@ -119,6 +131,14 @@ export const create = async (
       activeMembersCount: 0,
     });
   } catch (err) {
+    if (err instanceof PlanLimitError) {
+      const { status, body } = planErrorResponse(err);
+      res.status(status).json({
+        ...body,
+        error: `${body.error as string} Deactivate a trainer who has left to free a place.`,
+      });
+      return;
+    }
     console.error(err);
     res.status(500).json({ error: 'Server error' });
   }

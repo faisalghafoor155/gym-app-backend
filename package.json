@@ -13,9 +13,10 @@
     "db:migrate": "npx prisma migrate dev",
     "db:generate": "npx prisma generate",
     "db:seed": "tsx prisma/seed.ts",
-    "gen:permissions": "tsx scripts/generatePermissions.ts",
+    "gen:permissions": "tsx scripts/generatePermissions.ts && tsx scripts/generateEntitlements.ts",
     "check:mail": "tsx scripts/checkMail.ts",
-    "retention:fingerprints": "tsx scripts/runRetention.ts"
+    "retention:fingerprints": "tsx scripts/runRetention.ts",
+    "plan": "tsx scripts/setPlan.ts"
   },
   "keywords": [],
   "author": "",

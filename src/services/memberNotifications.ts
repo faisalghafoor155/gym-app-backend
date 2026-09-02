@@ -2,6 +2,7 @@
 
 import prisma from '../db.js';
 import { canWhatsApp } from './phone.js';
+import { planFor, planHasFeature } from './subscription.js';
 import { sendWhatsApp, templates, whatsappEnabled } from './whatsapp.js';
 
 /**
@@ -21,9 +22,27 @@ import { sendWhatsApp, templates, whatsappEnabled } from './whatsapp.js';
  * receipt on WhatsApp still has a receipt in the system.
  */
 
-/** Whether it is worth building a message for this member at all. */
-const reachable = (member: { phone: string | null; whatsappOptOut: boolean }): boolean =>
-  whatsappEnabled && !member.whatsappOptOut && canWhatsApp(member.phone);
+/**
+ * Whether it is worth building a message for this member at all.
+ *
+ * Three separate questions, and the order matters only for cost: whether the
+ * install can send at all, whether this gym's plan includes WhatsApp, and
+ * whether this member can and wants to receive it. The plan check is a query,
+ * so it comes after the two that are free.
+ *
+ * A gym whose tier excludes WhatsApp is not failing to send — it is not
+ * sending, the same way an unconfigured install is not. Nothing here reports
+ * it: these are fire-and-forget messages announcing something that already
+ * succeeded, and a member registering must not fail because of a plan.
+ */
+const reachable = async (
+  gymId: string,
+  member: { phone: string | null; whatsappOptOut: boolean },
+): Promise<boolean> => {
+  if (!whatsappEnabled) return false;
+  if (member.whatsappOptOut || !canWhatsApp(member.phone)) return false;
+  return planHasFeature(await planFor(gymId), 'whatsapp');
+};
 
 /** The gym's name, for the message body. Cheap and cached by Postgres. */
 const gymName = async (gymId: string): Promise<string> => {
@@ -47,7 +66,7 @@ export const notifyWelcome = async (
   member: { name: string; memberNo: string; phone: string | null; whatsappOptOut: boolean },
 ): Promise<void> => {
   try {
-    if (!reachable(member)) return;
+    if (!(await reachable(gymId, member))) return;
     await sendWhatsApp({
       to: member.phone!,
       ...templates.welcome(member.name, await gymName(gymId), member.memberNo),
@@ -73,7 +92,7 @@ export const notifyPaymentReceipt = async (
   forWhat: string,
 ): Promise<void> => {
   try {
-    if (!reachable(member)) return;
+    if (!(await reachable(gymId, member))) return;
     await sendWhatsApp({
       to: member.phone!,
       ...templates.paymentReceipt(member.name, await gymName(gymId), amount, forWhat),

@@ -2,6 +2,7 @@
 
 import type { Response } from "express";
 import prisma from "../db.js";
+import { planFor, planHasFeature } from "../services/subscription.js";
 import { audit } from "../services/audit.js";
 import { activeDevice } from "../services/fingerprint/index.js";
 import {
@@ -77,14 +78,29 @@ export const getStatus = async (
   const device = activeDevice();
   try {
     const configured = device.isConfigured();
+    const plan = await planFor(req.gymId);
+    const licensed = planHasFeature(plan, "biometrics");
     res.json({
       configured,
+      /**
+       * Whether the gym's plan includes biometrics at all.
+       *
+       * Separate from `configured`, because they are separate problems with
+       * separate fixes: an unlicensed gym needs to upgrade, an unconfigured one
+       * needs a reader plugged in. Collapsing them into one flag would leave the
+       * Attendance tab telling a paying gym to buy something it already has.
+       */
+      licensed,
+      plan,
       // Skipped when unconfigured: there is nothing to ping, and a probe
       // against an absent device is a guaranteed wait for a known answer.
       online: configured ? await device.isOnline() : false,
       label: device.label,
       format: device.format,
       matchesLocally: device.matchesLocally,
+      // Reported whatever the plan says. A gym that downgrades still holds the
+      // templates it took, and the page has to be able to say how many are
+      // there so they can be deleted.
       enrolledCount: await prisma.fingerprintTemplate.count({
         where: { gymId: req.gymId },
       }),

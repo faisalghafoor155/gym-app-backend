@@ -32,6 +32,11 @@ import {
 } from "../services/memberDuplicate.js";
 import { buildPtFeeCharge, trainerFeeSelect } from "../services/trainerFee.js";
 import { notifyWelcome } from "../services/memberNotifications.js";
+import {
+  claimPlace,
+  planErrorResponse,
+  PlanLimitError,
+} from "../services/subscription.js";
 import type { AuthedRequest } from "../types.js";
 import type {
   CreateMemberBody,
@@ -374,6 +379,23 @@ const respondDuplicate = (res: Response, hit: DuplicateHit): void => {
  * to save would burn that number, and a half-registered member is worse than a
  * rejected one.
  */
+/**
+ * Claims one place on the gym's roster, against its plan's member limit.
+ *
+ * Counts active members only, which is what makes the limit escapable without
+ * losing anybody: a gym at its ceiling can mark the people who stopped coming
+ * inactive and carry on, rather than having to delete them. It also stops a
+ * five-year-old gym being pushed up a tier by members from its first year.
+ *
+ * The lock inside `claimPlace` is what makes it hold under load — two
+ * receptionists registering the 50th and 51st walk-in at the same moment
+ * otherwise both count 49 and both commit.
+ */
+const claimMemberPlace = (tx: Prisma.TransactionClient, gymId: string): Promise<void> =>
+  claimPlace(tx, gymId, "members", (t) =>
+    t.member.count({ where: { gymId, status: "active" } }),
+  );
+
 export const create = async (
   req: AuthedRequest<Record<string, string>, unknown, CreateMemberBody>,
   res: Response,
@@ -439,6 +461,11 @@ export const create = async (
     }
 
     const member = await prisma.$transaction(async (tx) => {
+      // The gym's plan allows only so many people on the books. Claimed before
+      // anything is written, and inside the transaction, so a refusal rolls
+      // back the whole registration rather than leaving a member number burnt.
+      await claimMemberPlace(tx, req.gymId);
+
       // Re-checked here rather than trusting the client's live check: that one
       // is a hint typed into a form, this one is the decision. Two receptionists
       // registering the same walk-in at once both pass the hint; only one gets
@@ -574,6 +601,17 @@ export const create = async (
   } catch (err) {
     if (err instanceof DuplicateMemberError) {
       respondDuplicate(res, err.hit);
+      return;
+    }
+    if (err instanceof PlanLimitError) {
+      // Says how to make room as well as how to buy it: this limit counts
+      // active members, so a gym at its ceiling can free a place by retiring
+      // somebody who stopped coming rather than by paying.
+      const { status, body } = planErrorResponse(err);
+      res.status(status).json({
+        ...body,
+        error: `${body.error as string} Set a lapsed member to inactive to free a place.`,
+      });
       return;
     }
     if (err instanceof UnknownTrainerError) {
@@ -950,21 +988,46 @@ export const importMembers = async (
 
     const createdMembers = [] as string[];
     for (const memberData of createData) {
-      const gym = await prisma.gym.update({
-        where: { id: req.gymId },
-        data: { memberSeq: { increment: 1 } },
-        select: { memberSeq: true },
-      });
+      // Claimed per row rather than once for the file. An import is not
+      // atomic — each member is written on its own — so checking upfront would
+      // be checking against a roster that the loop itself is changing, and a
+      // file of 200 into a gym with 10 places left would write all 200. The
+      // rows that fit are kept: a partial import a gym can see the shape of
+      // beats refusing the file outright and leaving them to split it by hand.
+      try {
+        await prisma.$transaction(async (tx) => {
+          await claimMemberPlace(tx, req.gymId);
 
-      const created = await prisma.member.create({
-        data: {
-          gymId: req.gymId,
-          memberNo: formatMemberNo(gym.memberSeq),
-          ...memberData,
-        },
-        select: { id: true },
-      });
-      createdMembers.push(created.id);
+          const gym = await tx.gym.update({
+            where: { id: req.gymId },
+            data: { memberSeq: { increment: 1 } },
+            select: { memberSeq: true },
+          });
+
+          const created = await tx.member.create({
+            data: {
+              gymId: req.gymId,
+              memberNo: formatMemberNo(gym.memberSeq),
+              ...memberData,
+            },
+            select: { id: true },
+          });
+          createdMembers.push(created.id);
+        });
+      } catch (err) {
+        if (err instanceof PlanLimitError) {
+          // Said once, naming what is left rather than repeating per row: a
+          // file of 200 rows into a full gym would otherwise return 200
+          // identical lines and bury the ones that say something else.
+          const { body } = planErrorResponse(err);
+          errors.push(
+            `${body.error as string} ${createData.length - createdMembers.length} ` +
+              `of ${createData.length} rows were not imported.`,
+          );
+          break;
+        }
+        throw err;
+      }
     }
 
     res.json({ created: createdMembers.length, errors });

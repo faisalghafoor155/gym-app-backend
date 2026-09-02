@@ -1,8 +1,9 @@
-import { Prisma } from '@prisma/client';
+import { Prisma, type GymPlan } from '@prisma/client';
 import prisma from '../db.js';
 import { mailEnabled, membershipExpiryMail, sendMail } from '../services/mail.js';
 import { sendWhatsApp, templates, whatsappEnabled } from '../services/whatsapp.js';
 import { canWhatsApp } from '../services/phone.js';
+import { planHasFeature } from '../services/subscription.js';
 
 /**
  * Tells members their membership is ending, on the day it does and a few days
@@ -85,7 +86,7 @@ type Expiring = {
   gymId: string;
   member: { name: string; email: string | null; phone: string | null; status: string; whatsappOptOut: boolean };
   plan: { name: string };
-  gym: { name: string };
+  gym: { name: string; plan: GymPlan };
 };
 
 const findExpiring = (start: Date, end: Date) =>
@@ -104,7 +105,11 @@ const findExpiring = (start: Date, end: Date) =>
         select: { name: true, email: true, phone: true, status: true, whatsappOptOut: true },
       },
       plan: { select: { name: true } },
-      gym: { select: { name: true } },
+      // `plan` decides whether this gym's tier includes WhatsApp. Selected
+      // here rather than looked up per member: the gym is already joined, so
+      // it costs nothing, and a query inside the loop would run once for every
+      // membership expiring anywhere.
+      gym: { select: { name: true, plan: true } },
     },
   });
 
@@ -200,6 +205,11 @@ const notify = async (
     // failure count. Checked before the number so an unconfigured install
     // reports nothing about WhatsApp at all rather than a skip per member.
     if (!whatsappEnabled) continue;
+
+    // Nor is a gym whose plan does not include it. Same reasoning, one tier
+    // up: the email above still went, so a free gym's members are still told
+    // their membership is ending — they are told once instead of twice.
+    if (!planHasFeature(m.gym.plan, 'whatsapp')) continue;
 
     if (member.whatsappOptOut || !canWhatsApp(member.phone)) {
       run.skippedNoWhatsApp++;

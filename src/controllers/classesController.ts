@@ -1,6 +1,9 @@
 import type { Response } from 'express';
 import prisma from '../db.js';
 import { audit } from '../services/audit.js';
+import {
+  claimPlace, planErrorResponse, PlanLimitError,
+} from '../services/subscription.js';
 import type { AuthedRequest } from '../types.js';
 import type {
   CreateClassBody, CreateClassScheduleBody, ClassQuery, IdParam,
@@ -58,12 +61,21 @@ export const create = async (
 ): Promise<void> => {
   const { name, description } = req.body;
   try {
-    const createdClass = await prisma.class.create({
-      data: {
-        gymId: req.gymId,
-        name,
-        description,
-      },
+    const createdClass = await prisma.$transaction(async tx => {
+      // The catalogue is capped; the timetable built from it is not. Schedules
+      // and bookings are what a class is *for*, and capping those would cap
+      // how often a gym may run what it already pays to offer.
+      await claimPlace(tx, req.gymId, 'classes', t =>
+        t.class.count({ where: { gymId: req.gymId } }),
+      );
+
+      return tx.class.create({
+        data: {
+          gymId: req.gymId,
+          name,
+          description,
+        },
+      });
     });
 
     await audit(req, {
@@ -76,6 +88,11 @@ export const create = async (
 
     res.status(201).json(createdClass);
   } catch (err) {
+    if (err instanceof PlanLimitError) {
+      const { status, body } = planErrorResponse(err);
+      res.status(status).json(body);
+      return;
+    }
     console.error(err);
     res.status(500).json({ error: 'Server error' });
   }

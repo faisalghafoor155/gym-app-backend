@@ -5,7 +5,7 @@ import request from 'supertest';
 
 import prisma from '../src/db.js';
 import app from '../src/index.js';
-import type { StaffPermission } from '@prisma/client';
+import type { GymPlan, StaffPermission } from '@prisma/client';
 
 /**
  * Shared fixtures for the integration suite.
@@ -80,6 +80,7 @@ export const makeGym = async (opts: {
   email?: string;
   password?: string;
   isActive?: boolean;
+  plan?: GymPlan;
 } = {}): Promise<TestAccount> => {
   const {
     role = 'owner',
@@ -87,9 +88,17 @@ export const makeGym = async (opts: {
     email = `${role}-${crypto.randomUUID()}@example.com`,
     password = 'correct-horse-battery',
     isActive = true,
+    // Pro by default, so a test about anything other than plans is never
+    // stopped by one. The schema default is `free`; a suite that inherited it
+    // would fail on the 51st member of an unrelated fixture and read as a bug
+    // in whatever it was actually testing. Tests about limits ask for the tier
+    // they mean.
+    plan = 'pro',
   } = opts;
 
-  const gym = await prisma.gym.create({ data: { name: gymName, ownerName: `${role} user` } });
+  const gym = await prisma.gym.create({
+    data: { name: gymName, ownerName: `${role} user`, plan },
+  });
   const user = await prisma.user.create({
     data: {
       gymId: gym.id,
