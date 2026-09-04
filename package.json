@@ -16,7 +16,8 @@
     "gen:permissions": "tsx scripts/generatePermissions.ts && tsx scripts/generateEntitlements.ts",
     "check:mail": "tsx scripts/checkMail.ts",
     "retention:fingerprints": "tsx scripts/runRetention.ts",
-    "plan": "tsx scripts/setPlan.ts"
+    "plan": "tsx scripts/setPlan.ts",
+    "gym": "tsx scripts/suspendGym.ts"
   },
   "keywords": [],
   "author": "",

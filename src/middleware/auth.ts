@@ -55,11 +55,31 @@ export const requireAuth = async (
         memberId: true,
         tokenVersion: true,
         staffPermission: true,
+        // A join on the row already being fetched, so the suspension check
+        // below costs no extra round trip.
+        gym: { select: { suspendedAt: true, suspendedReason: true } },
       },
     });
 
     if (!user || !user.isActive) {
       res.status(401).json({ error: "Account is no longer active" });
+      return;
+    }
+
+    // A suspended gym is stopped here rather than at each route, and answered
+    // with 403 rather than 401 on purpose: 401 means "sign in again", which is
+    // exactly what an owner would try, and it would fail the same way forever.
+    // 403 with a reason lets the app say what actually happened.
+    //
+    // Nothing is deleted by a suspension — the data is all still there, and
+    // resuming puts the gym back exactly where it was.
+    if (user.gym.suspendedAt) {
+      res.status(403).json({
+        error:
+          user.gym.suspendedReason ??
+          "This gym's access has been suspended. Please contact support.",
+        reason: "gym_suspended",
+      });
       return;
     }
 
