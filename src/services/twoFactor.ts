@@ -6,6 +6,7 @@ import QRCode from "qrcode";
 import bcryptjs from "bcryptjs";
 import jwt from "jsonwebtoken";
 import prisma from "../db.js";
+import { encryptSecret, decryptSecret } from "./secretBox.js";
 import type { JwtPayload } from "../types.js";
 
 /**
@@ -99,7 +100,11 @@ export const enableTwoFactor = async (
   await prisma.user.update({
     where: { id: userId },
     data: {
-      twoFactorSecret: tempSecret,
+      // Re-encrypted rather than moved across as stored: the temp secret is
+      // handed to this function already decrypted by the caller that verified
+      // the code against it, and writing that plaintext into the permanent
+      // column is exactly the bug this is here to prevent.
+      twoFactorSecret: encryptSecret(tempSecret, userId),
       twoFactorEnabled: true,
       twoFactorBackupCodes: JSON.stringify(hashedCodes),
       twoFactorTempSecret: null,
@@ -134,11 +139,25 @@ export const saveTempTwoFactorSecret = async (
   await prisma.user.update({
     where: { id: userId },
     data: {
-      twoFactorTempSecret: tempSecret,
+      twoFactorTempSecret: encryptSecret(tempSecret, userId),
       twoFactorTempSecretAt: new Date(),
     },
   });
 };
+
+/**
+ * Reads a stored TOTP secret back into something `verifyTOTPCode` can use.
+ *
+ * Every read of `twoFactorSecret` or `twoFactorTempSecret` goes through here,
+ * so no call site has to remember that the column is encrypted — forgetting
+ * would mean comparing a code against ciphertext and locking the account out
+ * with a message saying the code was wrong.
+ *
+ * Secrets written before encryption existed come back unchanged, so nobody is
+ * locked out by the deploy that introduced it.
+ */
+export const readTwoFactorSecret = (stored: string, userId: string): string =>
+  decryptSecret(stored, userId);
 
 /**
  * Consume a backup code (remove it from the list after use)

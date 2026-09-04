@@ -154,6 +154,17 @@ let cached: KeyRing | null = null;
 const keyRing = (): KeyRing => (cached ??= readKeyRing());
 
 /**
+ * The same key ring, for the other things that have to be encrypted at rest.
+ *
+ * Exported rather than duplicated: parsing, validating and rotating keys is the
+ * part worth getting right once, and a second copy of it would be a second
+ * place for a rotation to be half-applied. `services/secretBox.ts` is the
+ * caller — see the note there on why one key covers both.
+ */
+export const encryptionKeyRing = keyRing;
+export type { KeyRing };
+
+/**
  * Whether a usable key is configured, without throwing.
  *
  * For the boot check, which wants to report the problem and exit rather than

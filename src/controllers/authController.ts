@@ -14,7 +14,7 @@ import { DEFAULT_PLANS } from '../services/membership.js';
 import { sendMail, passwordResetMail } from '../services/mail.js';
 import {
   signTwoFactorChallenge, verifyTwoFactorChallenge,
-  verifyTOTPCode, consumeBackupCode,
+  verifyTOTPCode, consumeBackupCode, readTwoFactorSecret,
 } from '../services/twoFactor.js';
 
 /** A reset link is short-lived; an old inbox should not be a way in. */
@@ -219,7 +219,7 @@ export const verifyTwoFactorLogin = async (
 
     const passed = code.includes('-')
       ? await consumeBackupCode(user.id, code)
-      : verifyTOTPCode(user.twoFactorSecret, code);
+      : verifyTOTPCode(readTwoFactorSecret(user.twoFactorSecret, user.id), code);
     if (!passed) {
       res.status(401).json({ error: 'Invalid code' });
       return;

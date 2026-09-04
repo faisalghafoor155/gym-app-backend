@@ -215,3 +215,165 @@ describe('login with 2FA enabled', () => {
     expect(sessionCookie(res)).toBeDefined();
   });
 });
+
+/**
+ * Turning the second factor off.
+ *
+ * This used to need nothing but the session cookie, which made 2FA worth very
+ * little: whoever stole a 30-day cookie could remove the protection that was
+ * supposed to stop them using it, in one request, and keep the account. The
+ * password is what the attacker holding the cookie does not have.
+ */
+describe('disabling 2FA', () => {
+  const enabledAccount = async () => {
+    const account = await makeGym({ password: 'correct-horse-battery' });
+    const secret = await enableTwoFactor(account.userId);
+    return { ...account, secret };
+  };
+
+  it('refuses without a password', async () => {
+    const { userId, cookie } = await enabledAccount();
+
+    const res = await api().delete('/api/auth/two-factor').set('Cookie', cookie).send({});
+
+    expect(res.status).toBe(400);
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    expect(user?.twoFactorEnabled).toBe(true);
+  });
+
+  it('refuses a wrong password, and leaves 2FA on', async () => {
+    const { userId, cookie } = await enabledAccount();
+
+    const res = await api()
+      .delete('/api/auth/two-factor')
+      .set('Cookie', cookie)
+      .send({ password: 'not-the-password' });
+
+    expect(res.status).toBe(401);
+    // The check is worthless if the account is left unprotected anyway.
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    expect(user?.twoFactorEnabled).toBe(true);
+    expect(user?.twoFactorSecret).not.toBeNull();
+  });
+
+  it('disables with the right password, and clears the secret', async () => {
+    const { userId, cookie } = await enabledAccount();
+
+    const res = await api()
+      .delete('/api/auth/two-factor')
+      .set('Cookie', cookie)
+      .send({ password: 'correct-horse-battery' });
+
+    expect(res.status).toBe(200);
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    expect(user?.twoFactorEnabled).toBe(false);
+    // Left behind, the seed would still generate valid codes for an account
+    // that no longer expects them.
+    expect(user?.twoFactorSecret).toBeNull();
+    expect(user?.twoFactorBackupCodes).toBeNull();
+  });
+
+  it('refuses when 2FA is not on, rather than reporting success', async () => {
+    const { cookie } = await makeGym({ password: 'correct-horse-battery' });
+
+    const res = await api()
+      .delete('/api/auth/two-factor')
+      .set('Cookie', cookie)
+      .send({ password: 'correct-horse-battery' });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('refuses without a session at all', async () => {
+    await enabledAccount();
+
+    const res = await api()
+      .delete('/api/auth/two-factor')
+      .send({ password: 'correct-horse-battery' });
+
+    expect(res.status).toBe(401);
+  });
+});
+
+/**
+ * The TOTP secret at rest.
+ *
+ * It is the seed that generates every code for an account. In plaintext, a
+ * database dump hands over every staff member's second factor permanently —
+ * and silently, because nothing about their authenticator app changes.
+ */
+describe('the stored TOTP secret', () => {
+  it('is not readable in the database after setup', async () => {
+    const { userId, cookie } = await makeGym({ password: 'correct-horse-battery' });
+
+    const setup = await api().get('/api/auth/two-factor/setup').set('Cookie', cookie);
+    expect(setup.status).toBe(200);
+    const plainSecret = setup.body.secret as string;
+
+    const during = await prisma.user.findUnique({ where: { id: userId } });
+    // The half-finished setup is a working seed too, so it is covered as well.
+    expect(during?.twoFactorTempSecret).not.toBe(plainSecret);
+    expect(during?.twoFactorTempSecret).toMatch(/^v1\./);
+
+    const verified = await api()
+      .post('/api/auth/two-factor/verify-setup')
+      .set('Cookie', cookie)
+      .send({ code: totp(plainSecret), backupCodes: [BACKUP_CODE] });
+    expect(verified.status).toBe(200);
+
+    const after = await prisma.user.findUnique({ where: { id: userId } });
+    expect(after?.twoFactorEnabled).toBe(true);
+    expect(after?.twoFactorSecret).not.toBe(plainSecret);
+    expect(after?.twoFactorSecret).toMatch(/^v1\./);
+    // The base32 alphabet has no lowercase, so this would catch the seed being
+    // written through unchanged even if the format check above were loosened.
+    expect(after?.twoFactorSecret).not.toContain(plainSecret.slice(0, 16));
+  });
+
+  it('still signs in with the encrypted secret', async () => {
+    // Encryption is worthless if it locks the owner out of their own account.
+    const { userId, email, cookie } = await makeGym({ password: 'correct-horse-battery' });
+    const setup = await api().get('/api/auth/two-factor/setup').set('Cookie', cookie);
+    const plainSecret = setup.body.secret as string;
+    await api()
+      .post('/api/auth/two-factor/verify-setup')
+      .set('Cookie', cookie)
+      .send({ code: totp(plainSecret), backupCodes: [BACKUP_CODE] });
+
+    const challenge = await api()
+      .post('/api/auth/login')
+      .set('x-test-skip-ratelimit', '1')
+      .send({ email, password: 'correct-horse-battery' });
+    expect(challenge.body.requiresTwoFactor).toBe(true);
+
+    const res = await api()
+      .post('/api/auth/two-factor/verify-login')
+      .send({ token: challenge.body.twoFactorToken, code: totp(plainSecret) });
+
+    expect(res.status).toBe(200);
+    expect(sessionCookie(res)).toBeDefined();
+    expect(userId).toBeTruthy();
+  });
+
+  it('still reads a secret written before encryption existed', async () => {
+    // The rows already in every deployed database are plaintext. If those
+    // stopped working, the deploy that added encryption would lock out every
+    // account that had 2FA switched on.
+    const { userId, email } = await makeGym({ password: 'correct-horse-battery' });
+    const legacySecret = await enableTwoFactor(userId);
+
+    const stored = await prisma.user.findUnique({ where: { id: userId } });
+    expect(stored?.twoFactorSecret).toBe(legacySecret);
+
+    const challenge = await api()
+      .post('/api/auth/login')
+      .set('x-test-skip-ratelimit', '1')
+      .send({ email, password: 'correct-horse-battery' });
+
+    const res = await api()
+      .post('/api/auth/two-factor/verify-login')
+      .send({ token: challenge.body.twoFactorToken, code: totp(legacySecret) });
+
+    expect(res.status).toBe(200);
+  });
+});
