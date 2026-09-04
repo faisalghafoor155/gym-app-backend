@@ -467,6 +467,29 @@ export const updateMyProfileSchema = z.object({
   emergencyContact: optionalText(100).optional(),
 });
 
+/**
+ * A member booking themselves into a class from the portal.
+ *
+ * Deliberately no `memberId`, unlike the staff schema this mirrors. The member
+ * is taken off the session, so there is no field for a caller to put somebody
+ * else's id in — the strongest version of that guarantee is the one where the
+ * value never arrives.
+ */
+export const bookMyClassSchema = z.object({
+  scheduleId: uuid,
+  bookingDate: date,
+});
+
+/** One page of the member's own history — bookings, receipts, purchases. */
+export const myHistoryQuerySchema = z.object({
+  ...pageParams(),
+});
+
+/** The timetable a member is offered, for one day. */
+export const myScheduleQuerySchema = z.object({
+  date: date.or(blankToUndefined).optional(),
+});
+
 export const importMembersSchema = z.object({
   csv: z.string().trim().min(1, "CSV is required"),
 });
@@ -1266,6 +1289,9 @@ export type UserQuery = z.infer<typeof userQuerySchema>;
 export type CreateMemberBody = z.infer<typeof createMemberSchema>;
 export type UpdateMemberBody = z.infer<typeof updateMemberSchema>;
 export type MemberQuery = z.infer<typeof memberQuerySchema>;
+export type BookMyClassBody = z.infer<typeof bookMyClassSchema>;
+export type MyHistoryQuery = z.infer<typeof myHistoryQuerySchema>;
+export type MyScheduleQuery = z.infer<typeof myScheduleQuerySchema>;
 export type MemberDuplicateQuery = z.infer<typeof memberDuplicateQuerySchema>;
 export type MemberStatusFilter = (typeof MEMBER_STATUS_FILTERS)[number];
 export type CreateMembershipPlanBody = z.infer<
