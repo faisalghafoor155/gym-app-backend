@@ -1,7 +1,21 @@
 /** @format */
 
 import "dotenv/config";
+
+// First, and as a side-effecting import rather than a call: ES module imports
+// are all hoisted and evaluated before any statement in this file runs, so a
+// `initObservability()` written here would execute *after* every import below
+// no matter how high up the page it sat. Sentry instruments modules as they
+// load, so it has to win that race — which means starting inside a module that
+// is itself imported first.
+import "./instrument.js";
+
 import express, { type ErrorRequestHandler } from "express";
+import {
+  requestLogger,
+  captureError,
+  flushObservability,
+} from "./services/observability.js";
 import cors from "cors";
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
@@ -56,6 +70,55 @@ if (!biometricKey.ok) {
   process.exit(1);
 }
 
+// Settings that are right for localhost and wrong the moment a member can
+// reach the app. Each is legitimate in development, so none of them can fail
+// the boot — but in production every one is a way to lose data or a session,
+// and the failure is silent. Said once, loudly, where a deploy will show it.
+//
+// Warnings rather than exits on purpose: an operator mid-migration should not
+// find the app refusing to start over a setting that was fine yesterday.
+if (process.env.NODE_ENV === "production") {
+  const unsafe: string[] = [];
+
+  // The session cookie is only marked Secure when this is on. Without it the
+  // cookie rides over plain http and one downgraded request hands a 30-day
+  // session to anyone on the same network.
+  if (process.env.HTTPS === "false") {
+    unsafe.push(
+      "HTTPS=false — session cookies are NOT marked Secure and password-reset " +
+        "links are plain http. Use docker-compose.https.yml, or set HTTPS=true " +
+        "if TLS is terminated by a proxy in front of this app.",
+    );
+  }
+
+  // A reset link built from an http:// or localhost URL either does not work
+  // or works over a channel that leaks the token in it.
+  const appUrl = process.env.APP_URL ?? "";
+  if (appUrl.startsWith("http://") && !appUrl.includes("localhost")) {
+    unsafe.push(
+      `APP_URL is plain http (${appUrl}) — password-reset and invite links ` +
+        "carry a token that anyone on the path can read and use.",
+    );
+  }
+
+  // Not fatal — the app runs fine and refuses photos with a clear message —
+  // but it is the kind of thing found by a receptionist rather than a deploy.
+  if (!process.env.S3_BUCKET_NAME) {
+    unsafe.push(
+      "S3 is not configured — member photo uploads will be REFUSED. Set " +
+        "AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and S3_BUCKET_NAME.",
+    );
+  }
+
+  if (unsafe.length) {
+    console.warn(
+      "\n[startup] This deployment has unsafe settings for production:\n" +
+        unsafe.map((w) => `  * ${w}`).join("\n") +
+        "\n",
+    );
+  }
+}
+
 // Said once at boot rather than left for an operator to infer from a member
 // complaining that renewals never complete. Without a configured gateway the
 // portal still works — it files front-desk requests instead of taking cards.
@@ -81,6 +144,10 @@ app.set(
     process.env.TRUST_PROXY_HOPS ?? (process.env.NODE_ENV === "test" ? 1 : 0),
   ),
 );
+
+// Before the routes and before the body parser, so a request that is rejected
+// for being oversized is still logged and still carries an id to quote.
+app.use(requestLogger);
 
 app.use(helmet());
 
@@ -191,7 +258,7 @@ app.get("/api/health", (_req, res) => {
 
 // Oversized or malformed JSON bodies reject before any route runs, so they
 // need handling here rather than in a controller.
-const errorHandler: ErrorRequestHandler = (err, _req, res, next) => {
+const errorHandler: ErrorRequestHandler = (err, req, res, next) => {
   if (res.headersSent) return next(err);
   const type = (err as { type?: string }).type;
   if (type === "entity.too.large") {
@@ -204,7 +271,11 @@ const errorHandler: ErrorRequestHandler = (err, _req, res, next) => {
     res.status(400).json({ error: "Invalid request body" });
     return;
   }
-  console.error(err);
+  // Anything reaching here is a fault in the app rather than in the request,
+  // which is exactly the class of thing nobody finds out about on their own.
+  // The two rejections above are deliberately not reported: a client sending a
+  // 5MB photo or malformed JSON is not a bug worth waking anyone for.
+  captureError(err, req);
   res.status(500).json({ error: "Server error" });
 };
 app.use(errorHandler);
@@ -225,4 +296,28 @@ if (process.env.NODE_ENV !== "test") {
     console.log(`Server running on port ${PORT}`);
   });
   startJobs();
+
+  // The failures that matter most are the ones that take the process with
+  // them: a rejected promise in a scheduled job, a throw outside any request.
+  // Docker restarts the container and the reason disappears with the old one,
+  // so it has to be reported — and flushed — before the exit completes.
+  process.on("unhandledRejection", (reason) => {
+    captureError(reason instanceof Error ? reason : new Error(String(reason)));
+  });
+
+  process.on("uncaughtException", (err) => {
+    captureError(err);
+    // Sentry batches, so exiting immediately would drop the very error that
+    // explains the crash. An uncaught exception leaves the process in an
+    // undefined state, so it still exits — just not before the report is away.
+    void flushObservability().finally(() => process.exit(1));
+  });
+
+  // Compose stops containers with SIGTERM. Anything still buffered is lost
+  // unless it is flushed here.
+  for (const signal of ["SIGTERM", "SIGINT"] as const) {
+    process.on(signal, () => {
+      void flushObservability().finally(() => process.exit(0));
+    });
+  }
 }

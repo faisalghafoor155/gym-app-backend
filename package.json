@@ -27,6 +27,7 @@
     "@aws-sdk/s3-request-presigner": "^3.1119.0",
     "@prisma/adapter-pg": "^7.9.0",
     "@prisma/client": "^7.9.0",
+    "@sentry/node": "^10.73.0",
     "bcryptjs": "^3.0.3",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
