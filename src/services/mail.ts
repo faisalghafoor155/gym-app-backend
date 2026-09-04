@@ -260,3 +260,52 @@ export const passwordResetMail = (
     ),
   };
 };
+
+/**
+ * Sent once, when a gym signs itself up, to check the address was typed
+ * correctly.
+ *
+ * The wording deliberately does not threaten anything. Nothing is withheld
+ * from an unverified account and nothing expires if this is ignored, so a mail
+ * saying "confirm within 24 hours or else" would be a lie — the only thing the
+ * deadline governs is this particular link.
+ *
+ * What it *does* say is why somebody should care: the address is where a
+ * forgotten password goes, and an address with a typo in it is a lockout
+ * waiting for the day they need it.
+ */
+export const verifyEmailMail = (
+  link: string,
+  validHours: number,
+  gymName: string,
+  name: string,
+): Omit<Mail, 'to'> => {
+  const validity = `${validHours} hour${validHours === 1 ? '' : 's'}`;
+  return {
+    subject: `Confirm your email for ${gymName}`,
+    text:
+      `Hello ${name},\n\n` +
+      `${gymName} is set up and ready to use — this is only to confirm the ` +
+      `address it was registered with.\n\n` +
+      `Confirm it here:\n${link}\n\n` +
+      `The link is valid for ${validity} and can be used once. You can carry ` +
+      `on using the app in the meantime; nothing is waiting on this.\n\n` +
+      `It matters because this is the address a password reset is sent to. If ` +
+      `it has a typo in it, the day you need that link is the day you find out.\n\n` +
+      `If you did not sign up, you can ignore this email.`,
+    html: layout(
+      `Confirm your email for ${gymName}`,
+      `<p style="color:#374151;line-height:1.5">Hello <strong>${name}</strong> — ` +
+      `<strong>${gymName}</strong> is set up and ready to use. This is only to ` +
+      `confirm the address it was registered with.</p>` +
+      `<p style="color:#374151;line-height:1.5">It matters because this is where ` +
+      `a password reset is sent. If the address has a typo in it, the day you ` +
+      `need that link is the day you find out.</p>`,
+      link,
+      'Confirm this address',
+      `The link is valid for ${validity} and can be used once. You can carry on ` +
+      `using the app in the meantime — nothing is waiting on this. If you did ` +
+      `not sign up, you can ignore this email.`,
+    ),
+  };
+};

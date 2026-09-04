@@ -5,10 +5,12 @@ import { authed } from '../types.js';
 import {
   registerSchema, loginSchema, forgotPasswordSchema, resetPasswordSchema,
   changePasswordSchema, googleAuthSchema, acceptInviteSchema,
+  verifyEmailSchema,
 } from '../schemas.js';
 import {
   register, login, googleAuth, forgotPassword, resetPassword,
   changePassword, logout, logoutFallback, me, checkInvite, acceptInvite,
+  verifyEmail, resendEmailVerification,
 } from '../controllers/authController.js';
 
 const router = Router();
@@ -22,6 +24,9 @@ router.post('/reset-password', validate(resetPasswordSchema), resetPassword);
 // Both public: the invitee has no account to authenticate with yet. The token
 // is the credential, which is why it is single-use and short-lived.
 router.get('/invite', checkInvite);
+// Public for the same reason: somebody clicking a link in their inbox is often
+// not signed in, and the token is the credential.
+router.post('/verify-email', validate(verifyEmailSchema), verifyEmail);
 router.post('/accept-invite', validate(acceptInviteSchema), acceptInvite);
 
 // Logout has to know who is signing out in order to revoke their sessions, so
@@ -32,5 +37,6 @@ router.post('/logout', logoutFallback, auth, authed(logout));
 
 router.get('/me', auth, authed(me));
 router.post('/change-password', auth, validate(changePasswordSchema), authed(changePassword));
+router.post('/resend-verification', auth, authed(resendEmailVerification));
 
 export default router;

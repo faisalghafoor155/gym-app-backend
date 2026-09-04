@@ -13,6 +13,9 @@ import { verifyGoogleToken } from '../services/google.js';
 import { DEFAULT_PLANS } from '../services/membership.js';
 import { sendMail, passwordResetMail } from '../services/mail.js';
 import {
+  issueEmailVerification, consumeEmailVerification,
+} from '../services/emailVerification.js';
+import {
   signTwoFactorChallenge, verifyTwoFactorChallenge,
   verifyTOTPCode, consumeBackupCode, readTwoFactorSecret,
 } from '../services/twoFactor.js';
@@ -27,6 +30,7 @@ const RESET_TTL_MS = 60 * 60 * 1000;
 const startSession = (res: Response, user: {
   id: string; name: string; email: string; role: string; memberId: string | null;
   tokenVersion: number; staffPermission?: string | null;
+  emailVerifiedAt?: Date | null;
   gym: {
     id: string; name: string; ownerName: string;
     phone: string | null; address: string | null;
@@ -38,6 +42,7 @@ const startSession = (res: Response, user: {
       id: user.id, name: user.name, email: user.email,
       role: user.role, memberId: user.memberId,
       staffPermission: user.staffPermission,
+      emailVerified: (user.emailVerifiedAt ?? null) !== null,
     },
     gym: {
       id: user.gym.id,
@@ -139,7 +144,84 @@ export const register = async (
       });
     });
 
+    // After the transaction, and not awaited into it: a mail transport being
+    // slow or down must not roll back a gym that has already been created.
+    // The address is unproven either way — this only starts the check.
+    void issueEmailVerification(user.id, {
+      email: user.email,
+      name: ownerName,
+      gymName,
+    }).catch((err: unknown) => {
+      console.error('[verify-email] could not issue verification', err);
+    });
+
     res.status(201).json(startSession(res, user));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * Confirms an address from the link that was mailed to it.
+ *
+ * Public: somebody clicking a link in their inbox may well not be signed in,
+ * and requiring a session would make the common case fail. The token is the
+ * credential, which is why it is single-use, short-lived and stored only as a
+ * hash.
+ */
+export const verifyEmail = async (
+  req: Request<unknown, unknown, { token: string }>,
+  res: Response,
+): Promise<void> => {
+  try {
+    const ok = await consumeEmailVerification(req.body.token);
+    if (!ok) {
+      res.status(400).json({ error: 'This link is invalid or has expired' });
+      return;
+    }
+    res.json({ verified: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/** Sends the link again, for the address on the signed-in account. */
+export const resendEmailVerification = async (
+  req: AuthedRequest,
+  res: Response,
+): Promise<void> => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.userId },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        emailVerifiedAt: true,
+        gym: { select: { name: true } },
+      },
+    });
+    if (!user) {
+      res.status(404).json({ error: 'Account not found' });
+      return;
+    }
+    if (user.emailVerifiedAt) {
+      res.status(400).json({ error: 'This address is already confirmed' });
+      return;
+    }
+
+    const { emailed } = await issueEmailVerification(user.id, {
+      email: user.email,
+      name: user.name,
+      gymName: user.gym.name,
+    });
+
+    // `emailed` is reported rather than assumed, so a deployment with no mail
+    // transport says so instead of leaving somebody waiting for a message that
+    // was only ever written to the container log.
+    res.json({ emailed });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
@@ -427,6 +509,9 @@ export const acceptInvite = async (
         inviteTokenHash: null,
         inviteTokenAt: null,
         lastLoginAt: new Date(),
+        // Following a link sent to that address proves exactly what the
+        // verification mail proves, so asking again would be theatre.
+        emailVerifiedAt: new Date(),
       },
       include: sessionInclude,
     });
@@ -539,8 +624,20 @@ export const me = async (req: AuthedRequest, res: Response): Promise<void> => {
         id: user.id, name: user.name, email: user.email,
         role: user.role, memberId: user.memberId,
         staffPermission: user.staffPermission,
+        // Drives the banner offering to send the link again. A boolean rather
+        // than the timestamp: when it happened is nobody's business on screen.
+        emailVerified: user.emailVerifiedAt !== null,
       },
-      gym: user.gym,
+      // Field by field rather than `user.gym`, which would also hand out
+      // `suspendedAt` and `suspendedReason` — internal state that a signed-in
+      // client has no use for. A suspended gym never reaches this line anyway.
+      gym: {
+        id: user.gym.id,
+        name: user.gym.name,
+        ownerName: user.gym.ownerName,
+        phone: user.gym.phone,
+        address: user.gym.address,
+      },
     });
   } catch (err) {
     console.error(err);

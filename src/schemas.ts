@@ -193,6 +193,11 @@ export const acceptInviteSchema = z.object({
   password,
 });
 
+/** Confirming an address from the link mailed to it. */
+export const verifyEmailSchema = z.object({
+  token: z.string().min(1, "is required"),
+});
+
 /**
  * Roles the owner may assign to somebody else.
  *
@@ -1371,6 +1376,7 @@ export type ExpenseQuery = z.infer<typeof expenseQuerySchema>;
 export type ProfitQuery = z.infer<typeof profitQuerySchema>;
 export type ExpenseCategory = (typeof EXPENSE_CATEGORIES)[number];
 export type UpdateGymSettingsBody = z.infer<typeof updateGymSettingsSchema>;
+export type VerifyEmailBody = z.infer<typeof verifyEmailSchema>;
 export type CheckoutBody = z.infer<typeof checkoutSchema>;
 export type ProviderParams = z.infer<typeof providerParams>;
 export type ConfirmManualParams = z.infer<typeof idParam>;

@@ -211,6 +211,27 @@ model User {
   inviteTokenHash String?
   inviteTokenAt   DateTime?
 
+  /// When this address was proved to belong to whoever is using the account.
+  ///
+  /// Null means unproven, not untrusted: nothing is withheld from an
+  /// unverified account. The app says so and offers to send the link again,
+  /// and that is all — a gym that signed up this morning must be able to
+  /// enrol its first member this morning, and blocking that behind an email
+  /// nobody has read yet would be a worse problem than the one it solves.
+  ///
+  /// What it is actually worth is catching a typo. An owner who registered
+  /// with the wrong address has no working password reset, and finds out only
+  /// when they are already locked out.
+  ///
+  /// Accounts created by invite are verified the moment the invite is
+  /// accepted: following a link sent to that address proves the same thing
+  /// this does, so asking again would be theatre.
+  emailVerifiedAt   DateTime?
+  /// Only the hash is stored, exactly as for invites and resets, so a database
+  /// leak does not hand over live verification links.
+  verifyTokenHash   String?
+  verifyTokenAt     DateTime?
+
   /// Bumped whenever every existing session must stop working — signing out,
   /// changing or resetting the password, deactivation, and role changes. The
   /// version is baked into each token, so one that carries a stale number is
