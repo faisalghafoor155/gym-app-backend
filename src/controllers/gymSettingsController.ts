@@ -18,6 +18,7 @@ const gymSettingsFields = {
   name: true,
   ownerName: true,
   phone: true,
+  address: true,
   defaultPtFee: true,
   easypaisaAccount: true,
   jazzcashAccount: true,
@@ -26,6 +27,10 @@ const gymSettingsFields = {
 
 /** What an owner can change here, and what a change is worth logging. */
 const AUDITED_SETTINGS = [
+  'name',
+  'ownerName',
+  'phone',
+  'address',
   'defaultPtFee',
   'easypaisaAccount',
   'jazzcashAccount',
@@ -49,7 +54,16 @@ export const update = async (
   req: AuthedRequest<unknown, unknown, UpdateGymSettingsBody>,
   res: Response,
 ): Promise<void> => {
-  const { defaultPtFee, easypaisaAccount, jazzcashAccount, bankAccount } = req.body;
+  const {
+    name,
+    ownerName,
+    phone,
+    address,
+    defaultPtFee,
+    easypaisaAccount,
+    jazzcashAccount,
+    bankAccount,
+  } = req.body;
   try {
     const before = await prisma.gym.findUniqueOrThrow({
       where: { id: req.gymId },
@@ -59,9 +73,20 @@ export const update = async (
     const after = await prisma.gym.update({
       where: { id: req.gymId },
       data: {
-        defaultPtFee,
         // Undefined leaves the stored value alone; null clears it. A partial
-        // save must not wipe the accounts it did not mention.
+        // save must not wipe the fields it did not mention.
+        //
+        // The gym's own name and owner are editable here for the first time.
+        // They were set once at signup and never again, which meant a typo in
+        // the name a member reads on every receipt could only be fixed in the
+        // database. They are not nullable, so blank is refused by the schema
+        // rather than clearing them.
+        ...(name !== undefined && { name }),
+        ...(ownerName !== undefined && { ownerName }),
+        ...(phone !== undefined && { phone }),
+        ...(address !== undefined && { address }),
+        // Required by the schema, so always present — unlike the rest.
+        defaultPtFee,
         ...(easypaisaAccount !== undefined && { easypaisaAccount }),
         ...(jazzcashAccount !== undefined && { jazzcashAccount }),
         ...(bankAccount !== undefined && { bankAccount }),

@@ -1214,6 +1214,25 @@ export const profitQuerySchema = z
 
 /** Gym-wide settings the owner can change. */
 export const updateGymSettingsSchema = z.object({
+  /**
+   * The gym's own identity, as it appears on every receipt a member keeps.
+   *
+   * Optional so a save that only changes a fee does not have to resend them,
+   * but not nullable: these are the two fields a receipt cannot do without,
+   * and blanking the gym's name would leave members holding paper from
+   * nobody. `name` refuses an empty string for the same reason.
+   */
+  name: name.optional(),
+  ownerName: name.optional(),
+  /** Printed under the gym's name. Blank clears it and the line is omitted. */
+  phone: optionalText(30).optional(),
+  /**
+   * One free-text block, not street/city/postcode. A receipt reproduces an
+   * address the way its owner writes it, and the addresses this is for do not
+   * decompose the way a form expects — 300 characters is room for the three or
+   * four lines somebody would actually print.
+   */
+  address: optionalText(300).optional(),
   /** What a trainer assignment costs when the trainer sets no price of their
    *  own. Zero is valid and means the gym charges nothing for it. */
   defaultPtFee: money,

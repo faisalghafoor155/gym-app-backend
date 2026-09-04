@@ -97,6 +97,31 @@ model Gym {
   name      String
   ownerName String
   phone     String?
+
+  /// Where the gym is, as it should appear on a receipt — one free-text block
+  /// rather than street/city/postcode columns. A receipt reproduces an address
+  /// the way its owner writes it, and Pakistani addresses do not decompose the
+  /// way a form expects: "Shop 4, Al-Rehman Plaza, Peshawar Road, Rawalpindi"
+  /// has no postcode and its own line breaks.
+  ///
+  /// Null means the gym has not set one, and the receipt simply omits the line
+  /// rather than printing an empty space where an address should be.
+  address String?
+
+  /// Whether this gym may be used at all.
+  ///
+  /// Separate from the plan: a tier says how much a gym may do, this says
+  /// whether it may do anything. The two are not the same lever — a gym that
+  /// stops paying should not be silently downgraded to `free` and quietly lose
+  /// members it can still see, it should be stopped with an explanation.
+  ///
+  /// Suspension is reversible and destroys nothing: the data stays exactly as
+  /// it was, and resuming puts the gym back where it left off. That is the
+  /// point — it is the lever to pull *instead* of deleting anything.
+  suspendedAt     DateTime?
+  /// Shown to the owner when they try to sign in, so a locked-out gym learns
+  /// why from the app rather than from a phone call.
+  suspendedReason String?
   /// Which tier this gym is on. New gyms start on `free`; every gym that
   /// existed before plans were enforced was moved to `basic`, which is the
   /// tier that matches what the app already did — six staff seats was the

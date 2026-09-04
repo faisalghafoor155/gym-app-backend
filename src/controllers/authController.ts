@@ -27,7 +27,10 @@ const RESET_TTL_MS = 60 * 60 * 1000;
 const startSession = (res: Response, user: {
   id: string; name: string; email: string; role: string; memberId: string | null;
   tokenVersion: number; staffPermission?: string | null;
-  gym: { id: string; name: string; ownerName: string };
+  gym: {
+    id: string; name: string; ownerName: string;
+    phone: string | null; address: string | null;
+  };
 }) => {
   setSessionCookie(res, user.id, user.tokenVersion);
   return {
@@ -36,13 +39,62 @@ const startSession = (res: Response, user: {
       role: user.role, memberId: user.memberId,
       staffPermission: user.staffPermission,
     },
-    gym: { id: user.gym.id, name: user.gym.name, ownerName: user.gym.ownerName },
+    gym: {
+      id: user.gym.id,
+      name: user.gym.name,
+      ownerName: user.gym.ownerName,
+      phone: user.gym.phone,
+      address: user.gym.address,
+    },
   };
 };
 
+/**
+ * The gym as every signed-in client sees it.
+ *
+ * `phone` and `address` are here rather than fetched when needed because the
+ * receipt needs them and a member cannot ask for them any other way:
+ * `/gym-settings` is staff-only, so a member printing their own receipt would
+ * get a 403. They are on the session for the same reason the name already
+ * was — it is what the app prints on the gym's behalf, and it is not secret.
+ */
 const sessionInclude = {
-  gym: { select: { id: true, name: true, ownerName: true } },
+  gym: {
+    select: {
+      id: true,
+      name: true,
+      ownerName: true,
+      phone: true,
+      address: true,
+      suspendedAt: true,
+      suspendedReason: true,
+    },
+  },
 } as const;
+
+/**
+ * Refuses a sign-in when the gym itself is suspended.
+ *
+ * `requireAuth` blocks every other route, but the sign-in paths run before it
+ * and would otherwise hand out a perfectly valid cookie that fails on the very
+ * next request — which reads as a broken app rather than a suspended one. The
+ * refusal has to happen where the session is created.
+ *
+ * Returns true when it has answered, so each caller can stop.
+ */
+const refusedForSuspension = (
+  res: Response,
+  gym: { suspendedAt: Date | null; suspendedReason: string | null },
+): boolean => {
+  if (!gym.suspendedAt) return false;
+  res.status(403).json({
+    error:
+      gym.suspendedReason ??
+      "This gym's access has been suspended. Please contact support.",
+    reason: 'gym_suspended',
+  });
+  return true;
+};
 
 /**
  * The answer when the first factor passed but the account has a second one.
@@ -112,6 +164,9 @@ export const login = async (
       res.status(403).json({ error: 'This account has been deactivated' });
       return;
     }
+    // Checked before the second factor is even offered: making somebody find
+    // their authenticator app to reach a refusal helps nobody.
+    if (refusedForSuspension(res, user.gym)) return;
     if (user.twoFactorEnabled) {
       res.json(startTwoFactorChallenge(user));
       return;
@@ -170,6 +225,11 @@ export const verifyTwoFactorLogin = async (
       return;
     }
 
+    // Checked again rather than trusted from the first step: the challenge is
+    // valid for ten minutes, which is long enough for a gym to be suspended in
+    // between, and this is the call that actually issues the cookie.
+    if (refusedForSuspension(res, user.gym)) return;
+
     await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
     res.json(startSession(res, user));
   } catch (err) {
@@ -205,6 +265,8 @@ export const googleAuth = async (
       res.status(403).json({ error: 'This account has been deactivated' });
       return;
     }
+    // Suspension applies to every way in, or it applies to none of them.
+    if (refusedForSuspension(res, user.gym)) return;
     // 2FA applies here too — Google verifying the password side does not
     // prove possession of the authenticator, and skipping it would make the
     // second factor optional for anyone who links a Google account.
@@ -368,6 +430,10 @@ export const acceptInvite = async (
       },
       include: sessionInclude,
     });
+
+    // The invite was issued before the gym was suspended, and accepting it
+    // would otherwise mint a session that fails on the next request.
+    if (refusedForSuspension(res, user.gym)) return;
 
     res.json(startSession(res, user));
   } catch (err) {
