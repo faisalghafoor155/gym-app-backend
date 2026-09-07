@@ -113,7 +113,8 @@ export const startJobs = (): void => {
   schedule('subscription billing', 'BILLING_CRON', BILLING_SCHEDULE, async () => {
     const run = await runSubscriptionBilling();
     return (
-      `subscriptions ${run.due}, invoiced ${run.issued}, suspended ${run.suspended}, ` +
+      `subscriptions ${run.due}, invoiced ${run.issued}, chased ${run.noticed}, ` +
+      `no owner email ${run.noticeSkippedNoEmail}, suspended ${run.suspended}, ` +
       `already suspended ${run.alreadySuspended}, failed ${run.failed}`
     );
   });

@@ -309,3 +309,109 @@ export const verifyEmailMail = (
     ),
   };
 };
+
+/**
+ * Escapes text that is about to be interpolated into an HTML mail.
+ *
+ * The gym's own name reaches these templates, and an owner types it. Without
+ * this, a gym called `<script>…` would have that markup delivered into
+ * somebody's inbox — harmless in most clients and not worth finding out.
+ *
+ * Only the five characters that can end an attribute or open a tag; this is
+ * for interpolation into element content, not for building URLs.
+ */
+const escapeHtml = (value: string): string =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+/** Rupees, written the way a Pakistani invoice writes them. */
+const rupees = (amount: number): string => `Rs. ${amount.toLocaleString('en-PK')}`;
+
+/** A date written for a person rather than for a machine. */
+const readableDate = (date: Date): string =>
+  date.toLocaleDateString('en-PK', { day: 'numeric', month: 'long', year: 'numeric' });
+
+/**
+ * Chases a gym for an unpaid subscription invoice.
+ *
+ * One template for the whole schedule rather than four, because only two
+ * sentences actually change: how the deadline is described, and how sharp the
+ * warning is. Four near-identical templates would be four places to fix a
+ * wrong figure.
+ *
+ * The tone escalates but the facts do not move. Every one of these says the
+ * same three things — what is owed, by when, and that nothing is deleted —
+ * because a gym owner reading the last notice after ignoring the first two is
+ * exactly who most needs the facts rather than the alarm.
+ *
+ * `daysBefore` is days until the due date; `0` is the day itself, and a
+ * negative number means the invoice is already overdue and suspension is what
+ * is now approaching.
+ */
+export const subscriptionInvoiceMail = (
+  gymName: string,
+  ownerName: string,
+  amount: number,
+  dueDate: Date,
+  daysBefore: number,
+  suspendsOn: Date,
+  payUrl: string,
+): Omit<Mail, 'to'> => {
+  const firstName = ownerName.split(' ')[0] ?? ownerName;
+  const overdue = daysBefore < 0;
+
+  const deadline = overdue
+    ? `was due on ${readableDate(dueDate)}`
+    : daysBefore === 0
+      ? `is due today`
+      : `is due on ${readableDate(dueDate)}`;
+
+  const subject = overdue
+    ? `Action needed: ${gymName}'s subscription is overdue`
+    : daysBefore === 0
+      ? `${gymName}'s subscription payment is due today`
+      : `${gymName}'s subscription renews in ${daysBefore} days`;
+
+  // The consequence, said plainly and only once. An owner who has ignored two
+  // notices needs the date rather than a stronger adjective — and needs to be
+  // told, in the same breath, that paying puts everything back.
+  const consequence = overdue
+    ? `Access will be paused on ${readableDate(suspendsOn)} if it is not settled. ` +
+      `Nothing is deleted when that happens — your members, payments and history ` +
+      `all stay exactly as they are, and paying restores access straight away.`
+    : `If it is not settled, access is paused on ${readableDate(suspendsOn)}. ` +
+      `Nothing would be deleted — paying restores everything immediately.`;
+
+  const g = escapeHtml(gymName);
+  const name = escapeHtml(firstName);
+
+  return {
+    subject,
+    text:
+      `Hi ${firstName},\n\n` +
+      `Your subscription for ${gymName} — ${rupees(amount)} — ${deadline}.\n\n` +
+      `${consequence}\n\n` +
+      `You can pay from the Plan & usage page:\n${payUrl}\n\n` +
+      `If you have already paid, please ignore this — it may have crossed with ` +
+      `your payment.`,
+    html:
+      `<div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:480px">` +
+      `<h2 style="margin:0 0 16px;font-size:18px">${escapeHtml(subject)}</h2>` +
+      `<p style="color:#374151;line-height:1.5">Hi ${name},</p>` +
+      `<p style="color:#374151;line-height:1.5">Your subscription for ` +
+      `<strong>${g}</strong> — <strong>${rupees(amount)}</strong> — ${deadline}.</p>` +
+      `<p style="color:${overdue ? '#b91c1c' : '#374151'};line-height:1.5">` +
+      `${consequence}</p>` +
+      `<p style="margin:24px 0"><a href="${payUrl}" ` +
+      `style="background:#2563eb;color:#fff;padding:12px 20px;border-radius:10px;` +
+      `text-decoration:none;font-weight:600;display:inline-block">Pay now</a></p>` +
+      `<p style="color:#6b7280;font-size:13px;line-height:1.5;margin-top:24px">` +
+      `If you have already paid, please ignore this — it may have crossed with ` +
+      `your payment.</p>` +
+      `</div>`,
+  };
+};

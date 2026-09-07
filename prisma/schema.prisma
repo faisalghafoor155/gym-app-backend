@@ -1082,6 +1082,26 @@ model SubscriptionInvoice {
   /// closed it.
   note String?
 
+  /// How many days before the due date the last chase went out, or `0` for the
+  /// one sent on the day itself. Null until the gym has been told anything.
+  ///
+  /// On the invoice rather than in `ReminderLog`, which is where the member
+  /// notices live: that table keys every row on a `membershipId`, and an
+  /// invoice is not a membership. Squeezing one in would have meant making
+  /// that column nullable and losing the constraint that makes it honest.
+  ///
+  /// One column rather than a row per notice because an invoice has exactly
+  /// one lifecycle and the notices walk it in order — 7 days out, then 1, then
+  /// the due date, then the last warning before suspension. Recording the most
+  /// recent is enough to know what is still owed, and the schedule only ever
+  /// counts down, so a smaller number is always the later notice.
+  lastNoticeDaysBefore Int?
+
+  /// When that notice was sent. Paired with the field above so a run that
+  /// happens twice in one day cannot send the same notice twice, and so an
+  /// operator can see the gym was actually warned before it was suspended.
+  lastNoticeAt DateTime?
+
   issuedAt DateTime  @default(now())
   paidAt   DateTime?
 
