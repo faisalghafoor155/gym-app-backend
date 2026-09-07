@@ -24,9 +24,15 @@ const pktDateTime = (at: Date): string => {
   );
 };
 
-const env = (key: string): string => process.env[key] ?? '';
+/**
+ * Built against a credential prefix, for the same reason `makeJazzcash` is:
+ * the gym's members pay into the gym's account, and the gym pays its
+ * subscription into ours. Same protocol, different secrets.
+ */
+export const makeEasypaisa = (prefix = ''): PaymentGateway => {
+  const env = (key: string): string => process.env[`${prefix}${key}`] ?? '';
 
-export const easypaisa: PaymentGateway = {
+  return {
   provider: 'easypaisa',
   label: 'Easypaisa',
 
@@ -97,4 +103,8 @@ export const easypaisa: PaymentGateway = {
         : `${code || 'unknown'}: ${String(body.desc ?? body.responseDesc ?? 'declined')}`,
     };
   },
+  };
 };
+
+/** The gym's own Easypaisa account — what its members pay into. */
+export const easypaisa: PaymentGateway = makeEasypaisa();

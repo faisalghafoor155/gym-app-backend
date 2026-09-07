@@ -42,9 +42,19 @@ const pktStamp = (at: Date): string => {
 const txnRef = (intentId: string, at: Date): string =>
   `T${pktStamp(at)}${intentId.replace(/-/g, '').slice(0, 8)}`.slice(0, 20);
 
-const env = (key: string): string => process.env[key] ?? '';
+/**
+ * Built against a credential prefix rather than fixed variable names.
+ *
+ * Two different accounts speak JazzCash here: the gym's own, which its members
+ * pay into, and the platform's, which gyms pay their subscription into. The
+ * protocol is identical and the secrets are not, so the difference is carried
+ * as a prefix instead of a second copy of this file — a copy would be two
+ * places to get the paisa conversion or the PKT timestamp wrong.
+ */
+export const makeJazzcash = (prefix = ''): PaymentGateway => {
+  const env = (key: string): string => process.env[`${prefix}${key}`] ?? '';
 
-export const jazzcash: PaymentGateway = {
+  return {
   provider: 'jazzcash',
   label: 'JazzCash',
 
@@ -133,4 +143,8 @@ export const jazzcash: PaymentGateway = {
         : `${code || 'unknown'}: ${String(body.pp_ResponseMessage ?? 'declined')}`,
     };
   },
+  };
 };
+
+/** The gym's own JazzCash account — what its members pay into. */
+export const jazzcash: PaymentGateway = makeJazzcash();

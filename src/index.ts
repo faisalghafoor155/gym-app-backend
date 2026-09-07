@@ -44,7 +44,9 @@ import expensesRoutes from "./routes/expenses.js";
 import analyticsRoutes from "./routes/analytics.js";
 import payoutsRoutes from "./routes/payouts.js";
 import subscriptionRoutes from "./routes/subscription.js";
+import billingRoutes from "./routes/billing.js";
 import { hasLiveGateway } from "./services/gateways/index.js";
+import { hasPlatformGateway } from "./services/gateways/platform.js";
 import { biometricKeyStatus } from "./services/fingerprint/crypto.js";
 import { startJobs } from "./jobs/index.js";
 
@@ -127,6 +129,17 @@ if (!hasLiveGateway()) {
     "[online-payments] no payment gateway configured; online renewals will be " +
       "recorded as front-desk requests for staff to confirm. Set JAZZCASH_* or " +
       "EASYPAISA_* to take payments online.",
+  );
+}
+
+// The other half of the same point, for the other direction the money moves.
+// Without this a gym can be invoiced and suspended for not paying, with no way
+// to pay from inside the app — which is worse than not billing at all.
+if (!hasPlatformGateway()) {
+  console.warn(
+    "[billing] no platform payment gateway configured; gyms cannot settle " +
+      "subscription invoices online and must be marked paid by an operator. " +
+      "Set PLATFORM_JAZZCASH_* or PLATFORM_EASYPAISA_* to collect them.",
   );
 }
 
@@ -227,6 +240,11 @@ const paymentLimiter = rateLimit({
 
 app.use("/api/online-payments/checkout", paymentLimiter);
 app.use("/api/online-payments/callback", paymentLimiter);
+// Same reasoning for the gym paying us: an unthrottled callback path is
+// unlimited free guesses at a signature, and an unthrottled checkout lets one
+// owner hold the button down.
+app.use("/api/billing/checkout", paymentLimiter);
+app.use("/api/billing/callback", paymentLimiter);
 
 app.use("/api/auth", authRoutes);
 app.use("/api/auth/two-factor", twoFactorRoutes);
@@ -251,6 +269,7 @@ app.use("/api/expenses", expensesRoutes);
 app.use("/api/analytics", analyticsRoutes);
 app.use("/api/payouts", payoutsRoutes);
 app.use("/api/subscription", subscriptionRoutes);
+app.use("/api/billing", billingRoutes);
 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });

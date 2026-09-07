@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import { runExpiryReminders } from './expiryReminders.js';
 import { runFingerprintRetention } from './fingerprintRetention.js';
+import { runSubscriptionBilling } from './subscriptionBilling.js';
 
 /**
  * The scheduler, kept apart from the work it schedules.
@@ -31,6 +32,17 @@ const SCHEDULE = process.env.REMINDER_CRON ?? '0 9 * * *';
  * are unrelated decisions that should not have to share an answer.
  */
 const RETENTION_SCHEDULE = process.env.FINGERPRINT_RETENTION_CRON ?? '0 3 * * *';
+
+/**
+ * When subscriptions are invoiced and overdue gyms are stopped.
+ *
+ * Four in the morning: like the retention sweep this touches nobody who is
+ * awake, and it must not land in the same minute as another job — a gym being
+ * suspended while the reminder job is emailing its members is a confusing pair
+ * of events to read in a log. Its own expression because "when do we bill" is
+ * unrelated to "when do we delete biometrics".
+ */
+const BILLING_SCHEDULE = process.env.BILLING_CRON ?? '0 4 * * *';
 
 /**
  * Whether this process should run scheduled work at all.
@@ -97,4 +109,12 @@ export const startJobs = (): void => {
       );
     },
   );
+
+  schedule('subscription billing', 'BILLING_CRON', BILLING_SCHEDULE, async () => {
+    const run = await runSubscriptionBilling();
+    return (
+      `subscriptions ${run.due}, invoiced ${run.issued}, suspended ${run.suspended}, ` +
+      `already suspended ${run.alreadySuspended}, failed ${run.failed}`
+    );
+  });
 };

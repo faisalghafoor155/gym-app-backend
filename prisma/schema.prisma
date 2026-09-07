@@ -1,4 +1,3 @@
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -93,7 +92,7 @@ enum GymPlan {
 }
 
 model Gym {
-  id        String   @id @default(uuid())
+  id        String  @id @default(uuid())
   name      String
   ownerName String
   phone     String?
@@ -126,8 +125,8 @@ model Gym {
   /// existed before plans were enforced was moved to `basic`, which is the
   /// tier that matches what the app already did — six staff seats was the
   /// figure hardcoded for everyone before this.
-  plan      GymPlan  @default(free)
-  createdAt DateTime @default(now())
+  plan            GymPlan   @default(free)
+  createdAt       DateTime  @default(now())
 
   /// What assigning a personal trainer costs, when the trainer has no fee of
   /// their own. Was hardcoded at Rs. 10,000 in the member controller, which
@@ -180,6 +179,12 @@ model Gym {
   paymentIntents  PaymentIntent[]
   expenses        Expense[]
   fingerprints    FingerprintTemplate[]
+
+  /// What this gym pays *us*, as opposed to everything above, which is what
+  /// its members pay it. Optional because a gym is only given a billing row
+  /// once it is actually billed.
+  subscription         GymSubscription?
+  subscriptionInvoices SubscriptionInvoice[]
 }
 
 /// Every account that can sign in. The first user created for a gym is its
@@ -226,11 +231,11 @@ model User {
   /// Accounts created by invite are verified the moment the invite is
   /// accepted: following a link sent to that address proves the same thing
   /// this does, so asking again would be theatre.
-  emailVerifiedAt   DateTime?
+  emailVerifiedAt DateTime?
   /// Only the hash is stored, exactly as for invites and resets, so a database
   /// leak does not hand over live verification links.
-  verifyTokenHash   String?
-  verifyTokenAt     DateTime?
+  verifyTokenHash String?
+  verifyTokenAt   DateTime?
 
   /// Bumped whenever every existing session must stop working — signing out,
   /// changing or resetting the password, deactivation, and role changes. The
@@ -240,13 +245,13 @@ model User {
 
   /// Two-Factor Authentication (TOTP)
   /// Secret key for generating TOTP codes. Null means 2FA is not enabled.
-  twoFactorSecret String?
+  twoFactorSecret       String?
   /// Whether 2FA is verified and active.
-  twoFactorEnabled Boolean @default(false)
+  twoFactorEnabled      Boolean   @default(false)
   /// Backup codes for 2FA recovery (JSON array of hashed codes).
-  twoFactorBackupCodes String?
+  twoFactorBackupCodes  String?
   /// Temporary secret while user is setting up 2FA (not yet confirmed).
-  twoFactorTempSecret String?
+  twoFactorTempSecret   String?
   twoFactorTempSecretAt DateTime?
 
   /// Staff permission level (only applicable when role = 'staff'). Null on
@@ -278,12 +283,12 @@ model Member {
   /// within the gym, not globally.
   memberNo String
 
-  name  String
-  email String?
-  phone String?
+  name     String
+  email    String?
+  phone    String?
   /// Legacy: base64-encoded photo, inline on the row. Written only when S3 is
   /// not configured; prefer photoKey.
-  photo String?
+  photo    String?
   /// S3 key for the stored photo.
   ///
   /// The key, and never a URL. The bucket is private, so the address a client
@@ -321,12 +326,12 @@ model Member {
   supplementSales SupplementSale[]
   user            User?
 
-  trainerId       String?
-  trainer         Trainer?         @relation(fields: [trainerId], references: [id])
-  ptSessions      PtSession[]
-  classBookings   ClassBooking[]
-  paymentIntents  PaymentIntent[]
-  fingerprint     FingerprintTemplate?
+  trainerId      String?
+  trainer        Trainer?             @relation(fields: [trainerId], references: [id])
+  ptSessions     PtSession[]
+  classBookings  ClassBooking[]
+  paymentIntents PaymentIntent[]
+  fingerprint    FingerprintTemplate?
 
   @@unique([gymId, memberNo])
   @@index([gymId])
@@ -586,10 +591,10 @@ model AuditLog {
   actorRole Role
 
   /// Dotted verb, e.g. `member.create`, `membership.create`, `plan.deactivate`.
-  action String
+  action      String
   /// The kind of thing acted on, e.g. `member`, `membership`, `plan`.
-  entity   String
-  entityId String
+  entity      String
+  entityId    String
   /// Human-readable stand-in for the entity ("Ali Khan"), so the log reads
   /// without a lookup even if the row it points at is gone.
   entityLabel String?
@@ -707,13 +712,13 @@ model SupplementSale {
   /// knowing who paid.
   memberId String?
 
-  quantity Int
+  quantity  Int
   /// The price per unit at the moment of sale, snapshotted so a later price
   /// change cannot rewrite what somebody was charged.
   unitPrice Decimal @db.Decimal(10, 2)
   /// quantity x unitPrice, stored rather than derived so a report never has to
   /// recompute money it is only reading.
-  total Decimal @db.Decimal(10, 2)
+  total     Decimal @db.Decimal(10, 2)
 
   /// The payment this sale produced, when it was made to a member. Walk-ins
   /// have no member to hang a Payment on, so this stays null for them.
@@ -733,24 +738,24 @@ model SupplementSale {
 }
 
 model Trainer {
-  id                   String      @id @default(uuid())
+  id                   String   @id @default(uuid())
   gymId                String
   name                 String
   phone                String?
   specialization       String?
-  commissionPercentage Decimal     @default(0.00) @db.Decimal(5, 2)
+  commissionPercentage Decimal  @default(0.00) @db.Decimal(5, 2)
   /// What assigning this trainer to a member costs, charged once at
   /// assignment. Null means "use the gym's default" rather than "free" — a
   /// trainer added before this existed should not silently start costing
   /// nothing, and zero has to stay available as a deliberate choice.
-  ptFee                Decimal?    @db.Decimal(10, 2)
-  isActive             Boolean     @default(true)
-  createdAt            DateTime    @default(now())
+  ptFee                Decimal? @db.Decimal(10, 2)
+  isActive             Boolean  @default(true)
+  createdAt            DateTime @default(now())
 
-  gym                  Gym         @relation(fields: [gymId], references: [id])
-  members              Member[]
-  ptSessions           PtSession[]
-  classSchedules       ClassSchedule[]
+  gym            Gym             @relation(fields: [gymId], references: [id])
+  members        Member[]
+  ptSessions     PtSession[]
+  classSchedules ClassSchedule[]
 
   @@index([gymId])
 }
@@ -776,9 +781,9 @@ model PtSession {
   payoutStatus      String   @default("unpaid") // unpaid, paid
   createdAt         DateTime @default(now())
 
-  gym               Gym      @relation(fields: [gymId], references: [id])
-  member            Member   @relation(fields: [memberId], references: [id])
-  trainer           Trainer  @relation(fields: [trainerId], references: [id])
+  gym     Gym     @relation(fields: [gymId], references: [id])
+  member  Member  @relation(fields: [memberId], references: [id])
+  trainer Trainer @relation(fields: [trainerId], references: [id])
 
   @@index([gymId])
   @@index([memberId])
@@ -786,35 +791,35 @@ model PtSession {
 }
 
 model Class {
-  id          String          @id @default(uuid())
+  id          String   @id @default(uuid())
   gymId       String
   name        String
   description String?
-  isActive    Boolean         @default(true)
-  createdAt   DateTime        @default(now())
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
 
-  gym         Gym             @relation(fields: [gymId], references: [id])
-  schedules   ClassSchedule[]
+  gym       Gym             @relation(fields: [gymId], references: [id])
+  schedules ClassSchedule[]
 
   @@index([gymId])
 }
 
 model ClassSchedule {
-  id        String         @id @default(uuid())
+  id        String   @id @default(uuid())
   gymId     String
   classId   String
   trainerId String?
   dayOfWeek Int
   startTime String
   endTime   String
-  capacity  Int            @default(20)
-  isActive  Boolean        @default(true)
-  createdAt DateTime       @default(now())
+  capacity  Int      @default(20)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
 
-  gym       Gym            @relation(fields: [gymId], references: [id])
-  class     Class          @relation(fields: [classId], references: [id])
-  trainer   Trainer?       @relation(fields: [trainerId], references: [id])
-  bookings  ClassBooking[]
+  gym      Gym            @relation(fields: [gymId], references: [id])
+  class    Class          @relation(fields: [classId], references: [id])
+  trainer  Trainer?       @relation(fields: [trainerId], references: [id])
+  bookings ClassBooking[]
 
   @@index([gymId])
   @@index([classId])
@@ -822,22 +827,22 @@ model ClassSchedule {
 }
 
 model ClassBooking {
-  id          String        @id @default(uuid())
+  id          String   @id @default(uuid())
   gymId       String
   scheduleId  String
   memberId    String
   bookingDate DateTime
-  status      String        @default("booked") // booked, attended, cancelled
-  createdAt   DateTime      @default(now())
+  status      String   @default("booked") // booked, attended, cancelled
+  createdAt   DateTime @default(now())
 
-  gym         Gym           @relation(fields: [gymId], references: [id])
-  schedule    ClassSchedule @relation(fields: [scheduleId], references: [id])
-  member      Member        @relation(fields: [memberId], references: [id])
+  gym      Gym           @relation(fields: [gymId], references: [id])
+  schedule ClassSchedule @relation(fields: [scheduleId], references: [id])
+  member   Member        @relation(fields: [memberId], references: [id])
 
+  @@unique([memberId, scheduleId, bookingDate])
   @@index([gymId])
   @@index([scheduleId])
   @@index([memberId])
-  @@unique([memberId, scheduleId, bookingDate])
 }
 
 /// What the gym spends. The other half of the books.
@@ -863,8 +868,8 @@ model Expense {
   /// receipt found in a drawer is dated the day it was written.
   spentOn DateTime
   /// Who was paid. Null for petty cash with nobody to name.
-  vendor String?
-  notes  String?
+  vendor  String?
+  notes   String?
 
   /// Who entered it. `SetNull` for the same reason Payment uses it: removing
   /// a staff account must never delete the gym's books.
@@ -899,7 +904,7 @@ model PaymentIntent {
   kind String /// renew | due
 
   /// Set when kind is `renew` — the plan being bought.
-  planId String?
+  planId    String?
   /// Set when kind is `due` — the already-recorded Payment being settled.
   paymentId String?
 
@@ -920,7 +925,7 @@ model PaymentIntent {
   /// The provider's verbatim callback, kept for reconciliation when the gym
   /// and the provider's statement disagree. Never read by application logic —
   /// the decision is made from the verified fields, not from this.
-  rawCallback Json?
+  rawCallback   Json?
   /// Why a `failed` intent failed, in the provider's words.
   failureReason String?
 
@@ -946,4 +951,150 @@ model PaymentIntent {
   @@index([gymId, status])
   /// Serves the sweep that expires abandoned attempts.
   @@index([status, expiresAt])
+}
+
+/// Where a gym's subscription invoice has got to.
+///
+/// Mirrors `PaymentIntentStatus` in shape but not in meaning: that one tracks a
+/// member paying their gym, this one tracks a gym paying us. They are kept
+/// apart because the money moves between different parties and settles into
+/// different rows — sharing an enum would invite sharing the code that reads
+/// it, and a bug there would cross the two.
+enum InvoiceStatus {
+  /// Issued and payable. The gym owes this and has until `dueDate`.
+  open
+  /// Settled — by a verified gateway callback, or by an operator who took the
+  /// money out of band.
+  paid
+  /// Written off. The gym never paid and we stopped asking; kept rather than
+  /// deleted so the history of what was billed stays complete.
+  void
+}
+
+/// How a gym's own subscription is billed.
+///
+/// One row per gym, created the first time billing touches it rather than at
+/// signup: a gym on `free` owes nothing, and a billing row for a gym that will
+/// never be invoiced is a row that has to be kept honest for no reason.
+///
+/// Separate from `Gym.plan` on purpose. The plan says what a gym may do today
+/// and is the thing every gate reads; this says whether it has paid to keep
+/// doing it. Merging them would mean a lapsed payment silently changing what
+/// the gym is entitled to, which is exactly the downgrade the schema argues
+/// against elsewhere — a gym that stops paying is stopped with an explanation,
+/// not quietly shrunk.
+model GymSubscription {
+  id    String @id @default(uuid())
+  gymId String @unique
+
+  /// What the gym is being billed for. Normally equal to `Gym.plan`; they part
+  /// company for the length of an upgrade that has been invoiced but not yet
+  /// paid, which is why the tier is not simply read from the gym.
+  plan GymPlan
+
+  /// What one period costs, in rupees, fixed per gym rather than read from the
+  /// price list at billing time. A gym that agreed a price keeps it until
+  /// somebody deliberately changes it here — a price list edit must not
+  /// silently re-price every gym already on the books.
+  amount Decimal @db.Decimal(10, 2)
+
+  /// How long one paid period lasts. Days rather than months, matching how
+  /// `MembershipPlan.durationDays` already measures a term — "a month" is not
+  /// a fixed number of days and every calculation that pretends otherwise
+  /// drifts.
+  periodDays Int @default(30)
+
+  /// Paid up to this moment. The next invoice covers the period starting here,
+  /// so renewing early adds to the end of the term rather than losing what is
+  /// left of it — the same rule membership renewal follows.
+  ///
+  /// Null before the first invoice is paid.
+  paidThrough DateTime?
+
+  /// Whether to keep issuing invoices. A gym being wound down stops being
+  /// billed without its history being deleted.
+  active Boolean @default(true)
+
+  /// How many days past `dueDate` a gym keeps working before it is suspended.
+  /// Per gym rather than global: an account being chased by a human should not
+  /// be cut off by a job at the same hour as one that has simply vanished.
+  graceDays Int @default(7)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  gym      Gym                   @relation(fields: [gymId], references: [id])
+  invoices SubscriptionInvoice[]
+
+  /// Serves the daily sweep, which asks for active subscriptions due to be
+  /// invoiced or chased.
+  @@index([active, paidThrough])
+}
+
+/// One billing period, and what happened to it.
+///
+/// An invoice exists as soon as a period is billed, before anybody has tried to
+/// pay it. That is the record the *Known gaps* note said was missing: without
+/// it a gym that stops paying looks exactly like a gym that never owed
+/// anything, and the only way to tell was to remember.
+model SubscriptionInvoice {
+  id             String @id @default(uuid())
+  subscriptionId String
+  gymId          String
+
+  /// What this invoice buys, captured at issue. Read back when it settles, so
+  /// a plan changed mid-period cannot retroactively alter what was paid for.
+  plan   GymPlan
+  amount Decimal @db.Decimal(10, 2)
+
+  /// The period this invoice covers. `periodEnd` becomes the subscription's
+  /// new `paidThrough` when it settles.
+  periodStart DateTime
+  periodEnd   DateTime
+
+  /// When payment is expected. Past this plus the subscription's grace, the
+  /// sweep suspends the gym.
+  dueDate DateTime
+
+  status InvoiceStatus @default(open)
+
+  /// Set when a gateway settled it. Null for an invoice an operator marked
+  /// paid by hand, which is the honest difference between "the provider told
+  /// us" and "somebody says so".
+  provider    PaymentProvider?
+  providerRef String?
+
+  /// The provider's verbatim callback, for reconciliation against their
+  /// statement. Never read by application logic, exactly as `PaymentIntent`
+  /// keeps its own.
+  rawCallback Json?
+
+  /// What the gym must pay before it can be settled, fixed at issue. The
+  /// callback's amount is checked against this and nothing else — the same
+  /// rule the member checkout follows, for the same reason.
+  ///
+  /// A pending attempt is not open-ended: past this the gym starts again, so
+  /// an abandoned checkout cannot settle weeks later at a price we have since
+  /// changed. Null until a checkout is started.
+  checkoutExpiresAt DateTime?
+
+  /// Why an invoice was voided, or why a payment failed — in whoever's words
+  /// closed it.
+  note String?
+
+  issuedAt DateTime  @default(now())
+  paidAt   DateTime?
+
+  subscription GymSubscription @relation(fields: [subscriptionId], references: [id])
+  gym          Gym             @relation(fields: [gymId], references: [id])
+
+  /// The idempotency guard, enforced by the database rather than in the
+  /// callback handler: two callbacks arriving at once would both pass an
+  /// application-level "have we seen this?" test, and one of them would settle
+  /// an invoice twice.
+  @@unique([provider, providerRef])
+  @@index([gymId])
+  @@index([subscriptionId])
+  /// Serves the sweep that chases and suspends on overdue invoices.
+  @@index([status, dueDate])
 }

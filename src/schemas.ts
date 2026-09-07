@@ -1296,6 +1296,34 @@ export const providerParams = z.object({
   provider: z.enum(['jazzcash', 'easypaisa', 'manual']),
 });
 
+/**
+ * Starting a subscription checkout — a gym paying us, not a member paying it.
+ *
+ * No amount, for the same reason `checkoutSchema` has none: the price is read
+ * from the invoice, which was written from the gym's own agreed rate. A body
+ * that could name its own figure is a body that can buy a year of Pro for one
+ * rupee.
+ *
+ * No invoice id either. A subscription has exactly one open invoice at a time
+ * — `issueInvoiceIfDue` refuses to write a second — so there is nothing to
+ * choose between, and accepting an id would only be one more thing to check
+ * belongs to this gym.
+ */
+export const subscriptionCheckoutSchema = z.object({
+  provider: z.enum(['jazzcash', 'easypaisa', 'manual']),
+});
+
+/**
+ * Asking to move onto a paid tier.
+ *
+ * `free` is absent deliberately: it is not something a gym buys, and a
+ * downgrade is not a checkout — it would have to reconcile a term already paid
+ * for, which is an operator's decision rather than a self-serve one.
+ */
+export const subscribeSchema = z.object({
+  plan: z.enum(['basic', 'pro']),
+});
+
 // --- inferred request-body types ---------------------------------------
 
 export type RegisterBody = z.infer<typeof registerSchema>;
@@ -1378,6 +1406,8 @@ export type ExpenseCategory = (typeof EXPENSE_CATEGORIES)[number];
 export type UpdateGymSettingsBody = z.infer<typeof updateGymSettingsSchema>;
 export type VerifyEmailBody = z.infer<typeof verifyEmailSchema>;
 export type CheckoutBody = z.infer<typeof checkoutSchema>;
+export type SubscriptionCheckoutBody = z.infer<typeof subscriptionCheckoutSchema>;
+export type SubscribeBody = z.infer<typeof subscribeSchema>;
 export type ProviderParams = z.infer<typeof providerParams>;
 export type ConfirmManualParams = z.infer<typeof idParam>;
 
