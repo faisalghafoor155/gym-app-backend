@@ -15,6 +15,7 @@
     "db:seed": "tsx prisma/seed.ts",
     "gen:permissions": "tsx scripts/generatePermissions.ts && tsx scripts/generateEntitlements.ts",
     "check:mail": "tsx scripts/checkMail.ts",
+    "check:whatsapp": "tsx scripts/checkWhatsApp.ts",
     "retention:fingerprints": "tsx scripts/runRetention.ts",
     "plan": "tsx scripts/setPlan.ts",
     "gym": "tsx scripts/suspendGym.ts",
