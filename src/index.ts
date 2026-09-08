@@ -11,6 +11,7 @@ import "dotenv/config";
 import "./instrument.js";
 
 import express, { type ErrorRequestHandler } from "express";
+import path from "node:path";
 import {
   requestLogger,
   captureError,
@@ -274,6 +275,38 @@ app.use("/api/billing", billingRoutes);
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });
 });
+
+// Single-origin deployments (Render, and anywhere else without a separate
+// nginx) serve the built frontend from this process. Set SERVE_STATIC_DIR to
+// the Vite dist folder to switch it on; the Docker image leaves it unset
+// because nginx serves the bundle there.
+//
+// Same-origin is the point, not a convenience: the session cookie is
+// sameSite 'lax', so a frontend on a different host than the API would never
+// have it sent and every request would arrive logged out.
+const staticDir = process.env.SERVE_STATIC_DIR;
+if (staticDir) {
+  const root = path.resolve(staticDir);
+
+  // Hashed Vite assets are immutable; everything else (index.html above all)
+  // must revalidate or a deploy would not reach anyone still holding a tab.
+  app.use(
+    "/assets",
+    express.static(path.join(root, "assets"), {
+      immutable: true,
+      maxAge: "1y",
+    }),
+  );
+  app.use(express.static(root, { index: false }));
+
+  // SPA fallback for react-router deep links. The /api exclusion is what keeps
+  // an unknown API path a 404: without it every mistyped endpoint would answer
+  // 200 with index.html, which reaches the client as a parse error rather than
+  // as a miss.
+  app.get(/^(?!\/api\/).*/, (_req, res) => {
+    res.sendFile(path.join(root, "index.html"));
+  });
+}
 
 // Oversized or malformed JSON bodies reject before any route runs, so they
 // need handling here rather than in a controller.
