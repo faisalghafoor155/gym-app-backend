@@ -224,6 +224,136 @@ describe('login with 2FA enabled', () => {
  * supposed to stop them using it, in one request, and keep the account. The
  * password is what the attacker holding the cookie does not have.
  */
+/**
+ * Regenerating backup codes.
+ *
+ * The codes are single-use and shown once, so an account that has spent them
+ * is one lost phone away from being locked out. This is the way back that does
+ * not involve turning the protection off and re-scanning a QR on every device.
+ *
+ * Password-gated for the same reason as disabling, and the reason is sharper
+ * here: these codes bypass the second factor, so a stolen cookie that could
+ * mint a set would get exactly what 2FA withholds — while leaving the
+ * protection apparently still on.
+ */
+describe('regenerating backup codes', () => {
+  const enabledAccount = async () => {
+    const account = await makeGym({ password: 'correct-horse-battery' });
+    const secret = await enableTwoFactor(account.userId);
+    return { ...account, secret };
+  };
+
+  const regenerate = (cookie: string, body: object) =>
+    api().post('/api/auth/two-factor/backup-codes').set('Cookie', cookie).send(body);
+
+  it('issues eight fresh codes for the right password', async () => {
+    const { cookie } = await enabledAccount();
+
+    const res = await regenerate(cookie, { password: 'correct-horse-battery' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.backupCodes).toHaveLength(8);
+    for (const code of res.body.backupCodes as string[]) {
+      expect(code).toMatch(/^\d{4}-\d{4}$/);
+    }
+  });
+
+  it('stores them hashed, never in the clear', async () => {
+    const { userId, cookie } = await enabledAccount();
+
+    const res = await regenerate(cookie, { password: 'correct-horse-battery' });
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    const stored = user!.twoFactorBackupCodes!;
+    // The plaintext must not survive the round trip — the column holds bcrypt
+    // hashes, exactly as enabling writes them.
+    for (const code of res.body.backupCodes as string[]) {
+      expect(stored).not.toContain(code);
+    }
+    expect(JSON.parse(stored)).toHaveLength(8);
+  });
+
+  it('kills the previous codes', async () => {
+    const { email, cookie } = await enabledAccount();
+
+    await regenerate(cookie, { password: 'correct-horse-battery' });
+
+    // BACKUP_CODE was the account's only code before regenerating. A set that
+    // outlived its replacement would mean a code written down and forgotten
+    // still opens the account.
+    const { body } = await loginChallenge(email);
+    const res = await api()
+      .post('/api/auth/two-factor/verify-login')
+      .send({ token: body.twoFactorToken, code: BACKUP_CODE });
+
+    expect(res.status).toBe(401);
+  });
+
+  it('issues codes that actually work', async () => {
+    const { email, cookie } = await enabledAccount();
+
+    const fresh = await regenerate(cookie, { password: 'correct-horse-battery' });
+    const code = (fresh.body.backupCodes as string[])[0]!;
+
+    const { body } = await loginChallenge(email);
+    const res = await api()
+      .post('/api/auth/two-factor/verify-login')
+      .send({ token: body.twoFactorToken, code });
+
+    expect(res.status).toBe(200);
+  });
+
+  it('leaves the authenticator alone, so nobody re-scans a QR', async () => {
+    const { userId, cookie } = await enabledAccount();
+    const before = await prisma.user.findUnique({ where: { id: userId } });
+
+    await regenerate(cookie, { password: 'correct-horse-battery' });
+
+    const after = await prisma.user.findUnique({ where: { id: userId } });
+    expect(after?.twoFactorSecret).toBe(before?.twoFactorSecret);
+    expect(after?.twoFactorEnabled).toBe(true);
+  });
+
+  it('refuses a wrong password, keeping the old codes alive', async () => {
+    const { userId, cookie } = await enabledAccount();
+    const before = await prisma.user.findUnique({ where: { id: userId } });
+
+    const res = await regenerate(cookie, { password: 'not-the-password' });
+
+    expect(res.status).toBe(401);
+    // Unchanged: a failed attempt that still burned the existing codes would
+    // lock out the very person it was protecting.
+    const after = await prisma.user.findUnique({ where: { id: userId } });
+    expect(after?.twoFactorBackupCodes).toBe(before?.twoFactorBackupCodes);
+  });
+
+  it('refuses without a password at all', async () => {
+    const { cookie } = await enabledAccount();
+
+    const res = await regenerate(cookie, {});
+
+    expect(res.status).toBe(400);
+  });
+
+  it('refuses when 2FA is not on — spare keys to an unlocked door', async () => {
+    const { cookie } = await makeGym({ password: 'correct-horse-battery' });
+
+    const res = await regenerate(cookie, { password: 'correct-horse-battery' });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('refuses without a session', async () => {
+    await enabledAccount();
+
+    const res = await api()
+      .post('/api/auth/two-factor/backup-codes')
+      .send({ password: 'correct-horse-battery' });
+
+    expect(res.status).toBe(401);
+  });
+});
+
 describe('disabling 2FA', () => {
   const enabledAccount = async () => {
     const account = await makeGym({ password: 'correct-horse-battery' });

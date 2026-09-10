@@ -20,6 +20,26 @@ export interface TwoFactorSetupResult {
 }
 
 /**
+ * Eight single-use codes in the xxxx-xxxx shape.
+ *
+ * Shared by setup and regeneration so both produce the same thing — two
+ * copies of this would be two chances for one of them to drift to a weaker
+ * RNG or a different length, and the weaker one would not look wrong.
+ *
+ * These bypass the authenticator entirely, so they come from the crypto RNG:
+ * `Math.random()` is predictable, and an attacker who has seen one code could
+ * work out the rest.
+ */
+const generateBackupCodes = (): string[] =>
+  Array.from(
+    { length: 8 },
+    () =>
+      crypto.randomInt(0, 10000).toString().padStart(4, "0") +
+      "-" +
+      crypto.randomInt(0, 10000).toString().padStart(4, "0"),
+  );
+
+/**
  * Generate a new TOTP secret and backup codes for 2FA setup
  */
 export const generateTwoFactorSecret = async (
@@ -38,17 +58,7 @@ export const generateTwoFactorSecret = async (
 
   const qrCode = await QRCode.toDataURL(secret.otpauth_url || "");
 
-  // Generate 8 backup codes (4 digit pairs). These are single-use
-  // credentials that bypass the authenticator, so they must come from a
-  // cryptographic RNG — Math.random() is predictable and would let an
-  // attacker who has seen one code guess the rest.
-  const backupCodes = Array.from(
-    { length: 8 },
-    () =>
-      crypto.randomInt(0, 10000).toString().padStart(4, "0") +
-      "-" +
-      crypto.randomInt(0, 10000).toString().padStart(4, "0"),
-  );
+  const backupCodes = generateBackupCodes();
 
   return {
     secret: secret.base32,
@@ -111,6 +121,37 @@ export const enableTwoFactor = async (
       twoFactorTempSecretAt: null,
     },
   });
+};
+
+/**
+ * Issues a fresh set of backup codes, replacing whatever is left.
+ *
+ * Needed because the codes are single-use and shown once: an account that has
+ * spent them has no way back in if the authenticator is ever lost, and the
+ * only remedy before this was to disable 2FA and set it up again — which
+ * means a window with the protection off, and a new QR to re-scan on every
+ * device. Regenerating keeps the same secret, so nobody re-enrols.
+ *
+ * The old codes stop working the moment this returns. That is the point: a
+ * code the user has written down and lost track of should not outlive the set
+ * it belonged to.
+ *
+ * Returns the plaintext codes, which is the only time they exist outside the
+ * user's hands — the column stores bcrypt hashes, exactly as `enableTwoFactor`
+ * writes them.
+ */
+export const regenerateBackupCodes = async (
+  userId: string,
+): Promise<string[]> => {
+  const codes = generateBackupCodes();
+  const hashedCodes = await Promise.all(codes.map(hashBackupCode));
+
+  await prisma.user.update({
+    where: { id: userId },
+    data: { twoFactorBackupCodes: JSON.stringify(hashedCodes) },
+  });
+
+  return codes;
 };
 
 /**

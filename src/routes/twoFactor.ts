@@ -14,6 +14,7 @@ import {
   verifyTOTPCode,
   getBackupCodeCount,
   readTwoFactorSecret,
+  regenerateBackupCodes,
 } from "../services/twoFactor.js";
 import { verifyTwoFactorLogin } from "../controllers/authController.js";
 import prisma from "../db.js";
@@ -184,6 +185,62 @@ router.get("/status", requireAuth, async (req, res: Response) => {
     res.status(500).json({ error: "Failed to load 2FA status" });
   }
 });
+
+/**
+ * POST /api/auth/two-factor/backup-codes
+ * Issues a fresh set of backup codes, invalidating the previous set.
+ *
+ * The codes are single-use and shown once, so an account that has spent them
+ * is one lost phone away from being locked out. Before this the only remedy
+ * was to disable 2FA and set it up again, which means a window with the
+ * protection off and a new QR to re-scan everywhere.
+ *
+ * Password-gated for the same reason as disabling: a stolen session cookie
+ * must not be able to mint itself a set of credentials that bypass the second
+ * factor — that would hand the attacker exactly what 2FA exists to withhold,
+ * and unlike disabling it, the theft would leave the protection apparently
+ * still on.
+ */
+router.post(
+  "/backup-codes",
+  requireAuth,
+  validate(z.object({ password: z.string().min(1, "is required") })),
+  async (req, res: Response) => {
+    const authReq = req as AuthedRequest<unknown, unknown, { password: string }>;
+    try {
+      const user = await prisma.user.findUnique({
+        where: { id: authReq.userId },
+        select: { passwordHash: true, twoFactorEnabled: true },
+      });
+
+      if (!user) {
+        res.status(404).json({ error: "User not found" });
+        return;
+      }
+
+      // Nothing to replace, and issuing codes that bypass a factor which is
+      // not switched on would be a set of spare keys to an unlocked door.
+      if (!user.twoFactorEnabled) {
+        res.status(400).json({ error: "2FA is not enabled on this account" });
+        return;
+      }
+
+      if (
+        !user.passwordHash ||
+        !(await bcrypt.compare(authReq.body.password, user.passwordHash))
+      ) {
+        res.status(401).json({ error: "Incorrect password" });
+        return;
+      }
+
+      const backupCodes = await regenerateBackupCodes(authReq.userId);
+      res.json({ backupCodes });
+    } catch (error) {
+      console.error("2FA backup code regeneration error:", error);
+      res.status(500).json({ error: "Failed to regenerate backup codes" });
+    }
+  },
+);
 
 /**
  * DELETE /api/auth/two-factor
