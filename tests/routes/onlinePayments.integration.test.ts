@@ -1,7 +1,8 @@
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import prisma from '../../src/db.js';
 import { addMember, addPlan, addUser, api, makeGym, resetDb } from '../helpers.js';
 import { hmacSha256Hex, sortedConcat } from '../../src/services/gateways/crypto.js';
+import * as whatsapp from '../../src/services/whatsapp.js';
 
 /**
  * The property every case here defends: **a member cannot grant themselves
@@ -551,5 +552,179 @@ describe('Online payments — plans and providers', () => {
       provider: 'easypaisa',
     });
     expect(res.status).toBe(400);
+  });
+});
+
+
+/**
+ * The receipt for money taken online.
+ *
+ * The front desk has always sent one; a member paying from their phone was the
+ * one path that took money and said nothing, so the only confirmation was
+ * whatever the provider's page showed before it closed. In most gyms running
+ * this the WhatsApp message *is* the receipt, so its absence is not cosmetic.
+ *
+ * What the cases below actually pin down is the pairing: a receipt goes out
+ * exactly when money moves, and never when it does not. Sending one for a
+ * declined payment, or a second for a replayed callback, tells a member they
+ * paid twice — and a WhatsApp message cannot be recalled.
+ */
+describe('Online payments — receipts', () => {
+  /**
+   * Stubs WhatsApp as configured and delivering.
+   *
+   * `whatsappEnabled` is computed once when the module loads, so it is stubbed
+   * through the module namespace rather than by setting the env vars — by the
+   * time a test runs, the value has long since been read.
+   */
+  const stubWhatsApp = () => {
+    vi.spyOn(whatsapp, 'whatsappEnabled', 'get').mockReturnValue(true);
+    return vi.spyOn(whatsapp, 'sendWhatsApp').mockResolvedValue('sent');
+  };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const initiate = async (cookie: string, planId: string) => {
+    const res = await startCheckout(cookie, { type: 'renew', planId, provider: 'jazzcash' });
+    return res.body as { intentId: string; fields: Record<string, string> };
+  };
+
+  /**
+   * Waits for the floating receipt promise to land.
+   *
+   * The receipt is sent after the transaction commits and deliberately not
+   * awaited, so the callback returns its 200 while several queries — the
+   * member, the gym's plan, the gym's name — are still in flight. A single
+   * tick is not enough; this polls until the stub is called, and gives up
+   * quickly so a genuine failure still fails fast rather than hanging.
+   */
+  const receiptSent = async (
+    wa: { mock: { calls: unknown[] } },
+    expected = 1,
+  ): Promise<void> => {
+    for (let i = 0; i < 100 && wa.mock.calls.length < expected; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  };
+
+  /** For the cases asserting nothing is sent: give it a chance to be wrong. */
+  const settled = async () => {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  };
+
+  it('sends a receipt naming the plan when a renewal is paid', async () => {
+    const wa = stubWhatsApp();
+    const { account, plan, member } = await setup();
+    const started = await initiate(account.cookie, plan.id);
+
+    const res = await api()
+      .post('/api/online-payments/callback/jazzcash')
+      .type('form')
+      .send(
+        signedCallback({
+          pp_TxnRefNo: started.fields.pp_TxnRefNo,
+          pp_Amount: '300000',
+          pp_ResponseCode: '000',
+        }),
+      );
+
+    expect(res.status).toBe(200);
+    await receiptSent(wa);
+
+    expect(wa).toHaveBeenCalledTimes(1);
+    const sent = wa.mock.calls[0]![0]!;
+    expect(sent.to).toBe('03001234567');
+    // The plan name and the amount, because a receipt that says neither is not
+    // a receipt. Matched loosely: the template's wording is free to change.
+    const text = JSON.stringify(sent);
+    expect(text).toContain('Monthly'); // addPlan's default plan name
+    expect(text).toContain('3000');
+    // And the date the money was taken, spelled out. Asserted against today
+    // formatted the same way rather than a fixed string, so the case does not
+    // start failing tomorrow.
+    const today = new Date().toLocaleDateString('en-PK', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+    });
+    expect(text).toContain(today);
+
+    // And the money really did move — a receipt without this would be a lie.
+    expect(await prisma.payment.count({ where: { memberId: member.id, status: 'paid' } })).toBe(1);
+  });
+
+  it('sends no receipt when the payment is declined', async () => {
+    const wa = stubWhatsApp();
+    const { account, plan, member } = await setup();
+    const started = await initiate(account.cookie, plan.id);
+
+    await api()
+      .post('/api/online-payments/callback/jazzcash')
+      .type('form')
+      .send(
+        signedCallback({
+          pp_TxnRefNo: started.fields.pp_TxnRefNo,
+          pp_Amount: '300000',
+          pp_ResponseCode: '999',
+        }),
+      );
+
+    await settled();
+
+    expect(wa).not.toHaveBeenCalled();
+    expect(await prisma.membership.count({ where: { memberId: member.id } })).toBe(0);
+  });
+
+  it('sends one receipt however many times the callback is replayed', async () => {
+    const wa = stubWhatsApp();
+    const { account, plan, member } = await setup();
+    const started = await initiate(account.cookie, plan.id);
+    const body = signedCallback({
+      pp_TxnRefNo: started.fields.pp_TxnRefNo,
+      pp_Amount: '300000',
+      pp_ResponseCode: '000',
+    });
+
+    const send = () =>
+      api().post('/api/online-payments/callback/jazzcash').type('form').send(body);
+
+    await send();
+    await send();
+    await send();
+    await receiptSent(wa);
+    // Then wait again, so a second receipt would have time to appear.
+    await settled();
+
+    // The intent is claimed once, so only the winning callback reaches the
+    // receipt. Two would tell the member they had been charged twice.
+    expect(wa).toHaveBeenCalledTimes(1);
+    expect(await prisma.payment.count({ where: { memberId: member.id } })).toBe(1);
+  });
+
+  it('does not block the callback when the receipt cannot be sent', async () => {
+    vi.spyOn(whatsapp, 'whatsappEnabled', 'get').mockReturnValue(true);
+    vi.spyOn(whatsapp, 'sendWhatsApp').mockRejectedValue(new Error('Meta is down'));
+    const { account, plan, member } = await setup();
+    const started = await initiate(account.cookie, plan.id);
+
+    const res = await api()
+      .post('/api/online-payments/callback/jazzcash')
+      .type('form')
+      .send(
+        signedCallback({
+          pp_TxnRefNo: started.fields.pp_TxnRefNo,
+          pp_Amount: '300000',
+          pp_ResponseCode: '000',
+        }),
+      );
+    await settled();
+
+    // The provider gets its 200 and the membership stands. A receipt that
+    // failed to send must never unwind money that was actually taken.
+    expect(res.status).toBe(200);
+    expect(await prisma.membership.count({ where: { memberId: member.id, status: 'active' } })).toBe(1);
+    expect(await prisma.payment.count({ where: { memberId: member.id, status: 'paid' } })).toBe(1);
   });
 });

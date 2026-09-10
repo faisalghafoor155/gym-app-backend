@@ -114,7 +114,7 @@ Sent when a payment is recorded as paid.
 **Body:**
 
 ```
-Hi {{1}}, {{2}} has received your payment of Rs. {{3}} for {{4}}.
+Hi {{1}}, {{2}} has received your payment of Rs. {{3}} for {{4}} on {{5}}.
 
 Thank you. Reply STOP to opt out of these messages.
 ```
@@ -125,6 +125,17 @@ Thank you. Reply STOP to opt out of these messages.
 | `{{2}}` | Gym name | Iron House Gym |
 | `{{3}}` | Amount | 2,500 |
 | `{{4}}` | What it was for | Monthly |
+| `{{5}}` | Date of the payment | 3 September 2026 |
+
+> **This template gained a fifth slot.** Until the new body is approved in
+> Meta's console, receipts will be **rejected** — Meta refuses a send whose
+> variable count does not match the approved body, so an out-of-date template
+> means no receipt at all rather than a receipt missing its date. Submit the
+> edit and wait for approval before deploying.
+>
+> The date is spelled out (`3 September 2026`, not `03/09/2026`) because a
+> receipt is the document a member quotes back months later, and a numeric date
+> is read two different ways either side of a border.
 
 ---
 

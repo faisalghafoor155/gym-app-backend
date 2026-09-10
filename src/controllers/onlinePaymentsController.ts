@@ -6,6 +6,7 @@ import { addDays, toView, withPlan } from '../services/membership.js';
 import { audit } from '../services/audit.js';
 import { availableGateways, getGateway } from '../services/gateways/index.js';
 import { planFor, planHasFeature } from '../services/subscription.js';
+import { notifyPaymentReceipt } from '../services/memberNotifications.js';
 import type { CheckoutBody, ConfirmManualParams, ProviderParams } from '../schemas.js';
 
 /**
@@ -328,6 +329,15 @@ const settleIntent = async (
   intent: PaymentIntent,
   body: Record<string, unknown>,
 ): Promise<void> => {
+  // What the member bought, in their own words, filled in by whichever branch
+  // below actually took the money. Declared out here because the receipt is
+  // sent after the transaction commits, not inside it.
+  let receiptFor: string | null = null;
+  // One timestamp for the row and the receipt both, so a member comparing the
+  // message against their payment history never sees two different dates for
+  // the same money.
+  const paidAt = new Date();
+
   await prisma.$transaction(async (tx) => {
     // The guard against a concurrent duplicate. `updateMany` with a status
     // filter returns a count rather than throwing, which is what lets the
@@ -347,8 +357,9 @@ const settleIntent = async (
     if (intent.kind === 'due' && intent.paymentId) {
       await tx.payment.update({
         where: { id: intent.paymentId },
-        data: { status: 'paid', method: 'online', paymentDate: new Date() },
+        data: { status: 'paid', method: 'online', paymentDate: paidAt },
       });
+      receiptFor = 'outstanding balance';
       return;
     }
 
@@ -391,9 +402,11 @@ const settleIntent = async (
           method: 'online',
           type: 'membership',
           membershipId: membership.id,
+          paymentDate: paidAt,
           notes: `Online renewal — ${plan.name} (${intent.provider})`,
         },
       });
+      receiptFor = plan.name;
     }
   });
 
@@ -402,6 +415,34 @@ const settleIntent = async (
     provider: intent.provider,
     kind: intent.kind,
   });
+
+  // The receipt the front desk already sends for money taken over the counter.
+  // A member paying from their phone had been the one case that took money and
+  // said nothing — the payment landed, the membership moved, and the only
+  // confirmation was whatever the provider's own page showed before it closed.
+  //
+  // After the transaction, never inside it: a receipt for a settlement that
+  // then rolled back would tell a member they had paid when they had not, and
+  // a WhatsApp message cannot be recalled. Reaching this line means the money
+  // is committed.
+  //
+  // Not awaited, and it swallows its own errors — the payment is recorded
+  // either way, and the provider's callback must not be left waiting on Meta.
+  if (receiptFor) {
+    const member = await prisma.member.findUnique({
+      where: { id: intent.memberId },
+      select: { name: true, phone: true, whatsappOptOut: true },
+    });
+    if (member) {
+      void notifyPaymentReceipt(
+        intent.gymId,
+        member,
+        intent.amount.toString(),
+        receiptFor,
+        paidAt,
+      );
+    }
+  }
 };
 
 /**

@@ -162,11 +162,18 @@ export const templates = {
     variables: [member, gym, memberNo],
   }),
 
-  /** Money was taken. The member's only receipt, in most gyms. */
+  /**
+   * Money was taken. The member's only receipt, in most gyms.
+   *
+   * `when` is the date the payment was recorded, already written for a person.
+   * A receipt without one is not much of a receipt: a member querying a charge
+   * months later, or holding two renewals of the same plan, has nothing to
+   * tell them apart.
+   */
   paymentReceipt: (
-    member: string, gym: string, amount: string, forWhat: string,
+    member: string, gym: string, amount: string, forWhat: string, when: string,
   ): Omit<WhatsAppMessage, 'to'> => ({
     template: 'payment_receipt',
-    variables: [member, gym, amount, forWhat],
+    variables: [member, gym, amount, forWhat, when],
   }),
 } as const;

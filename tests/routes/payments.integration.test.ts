@@ -1,8 +1,9 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import prisma from '../../src/db.js';
 import { addDays } from '../../src/services/membership.js';
 import { addMember, addPlan, addUser, api, makeGym, resetDb } from '../helpers.js';
+import * as whatsapp from '../../src/services/whatsapp.js';
 
 /**
  * Money through the real stack: Decimal in the database, plain numbers over
@@ -508,5 +509,90 @@ describe('a manual payment recorded twice', () => {
     // 5000 paid against a 2500 plan: the surplus must read as zero owing, never
     // as -2500, which would cancel out somebody else's real debt in a total.
     expect(row).toMatchObject({ paid: 5000, outstanding: 0 });
+  });
+});
+
+
+/**
+ * The receipt for money taken at the desk.
+ *
+ * In most gyms running this the WhatsApp message *is* the receipt — nothing is
+ * printed — so what it says is the only record a member holds. These cases pin
+ * the two things that make it usable months later: the amount, and the date
+ * the money was actually taken.
+ */
+describe('payment receipts', () => {
+  const stubWhatsApp = () => {
+    vi.spyOn(whatsapp, 'whatsappEnabled', 'get').mockReturnValue(true);
+    return vi.spyOn(whatsapp, 'sendWhatsApp').mockResolvedValue('sent');
+  };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** The receipt is sent without being awaited, so the desk is not kept waiting. */
+  const sent = async (wa: { mock: { calls: unknown[] } }): Promise<void> => {
+    for (let i = 0; i < 100 && wa.mock.calls.length < 1; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  };
+
+  const readable = (d: Date) =>
+    d.toLocaleDateString('en-PK', { day: 'numeric', month: 'long', year: 'numeric' });
+
+  it('sends a receipt carrying the amount and the date', async () => {
+    const wa = stubWhatsApp();
+    const owner = await makeGym();
+    const member = await addMember(owner.gymId);
+
+    const res = await api().post('/api/payments').set('Cookie', owner.cookie)
+      .send({ memberId: member.id, amount: 2500, type: 'membership' });
+    expect(res.status).toBe(201);
+    await sent(wa);
+
+    expect(wa).toHaveBeenCalledTimes(1);
+    const text = JSON.stringify(wa.mock.calls[0]![0]);
+    expect(text).toContain('2500');
+    expect(text).toContain(readable(new Date()));
+  });
+
+  it('dates the receipt from the payment, not from today', async () => {
+    const wa = stubWhatsApp();
+    const owner = await makeGym();
+    const member = await addMember(owner.gymId);
+
+    // Friday's cash, entered on Monday. The receipt must agree with the
+    // register the member is shown, not with the day somebody typed it in.
+    const backDated = new Date();
+    backDated.setDate(backDated.getDate() - 3);
+
+    const res = await api().post('/api/payments').set('Cookie', owner.cookie)
+      .send({
+        memberId: member.id,
+        amount: 2500,
+        type: 'membership',
+        paymentDate: backDated.toISOString(),
+      });
+    expect(res.status).toBe(201);
+    await sent(wa);
+
+    const text = JSON.stringify(wa.mock.calls[0]![0]);
+    expect(text).toContain(readable(backDated));
+    expect(text).not.toContain(readable(new Date()));
+  });
+
+  it('sends nothing for a due, which is money not yet taken', async () => {
+    const wa = stubWhatsApp();
+    const owner = await makeGym();
+    const member = await addMember(owner.gymId);
+
+    await api().post('/api/payments').set('Cookie', owner.cookie)
+      .send({ memberId: member.id, amount: 2500, type: 'membership', status: 'due' });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    // A receipt for a due would tell the member they had paid something they
+    // have not.
+    expect(wa).not.toHaveBeenCalled();
   });
 });

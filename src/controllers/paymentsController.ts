@@ -226,6 +226,10 @@ export const create = async (
         // one, and the payment's own kind when there is not — a supplement
         // sale or a registration fee has no membership to name.
         payment.membership?.plan.name ?? payment.type,
+        // The payment's own date, not today's. A payment can be back-dated at
+        // the desk — recording Friday's cash on Monday — and a receipt saying
+        // Monday would contradict the register the member is shown.
+        payment.paymentDate,
       );
     }
 

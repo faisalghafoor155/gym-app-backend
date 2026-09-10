@@ -44,6 +44,22 @@ const reachable = async (
   return planHasFeature(await planFor(gymId), 'whatsapp');
 };
 
+/**
+ * The date on a receipt, written for a person rather than for a machine.
+ *
+ * `en-PK` with a spelled-out month, matching how the emailed invoices already
+ * write dates — a member who gets both should not see 03/09 in one and
+ * 3 September in the other. Spelled out on purpose: 03/09 is the third of
+ * September to the gym and the ninth of March to half the internet, and a
+ * receipt is exactly the document somebody quotes back months later.
+ */
+const receiptDate = (date: Date): string =>
+  date.toLocaleDateString('en-PK', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  });
+
 /** The gym's name, for the message body. Cheap and cached by Postgres. */
 const gymName = async (gymId: string): Promise<string> => {
   const gym = await prisma.gym.findUnique({
@@ -90,12 +106,19 @@ export const notifyPaymentReceipt = async (
   member: { name: string; phone: string | null; whatsappOptOut: boolean },
   amount: string,
   forWhat: string,
+  when: Date = new Date(),
 ): Promise<void> => {
   try {
     if (!(await reachable(gymId, member))) return;
     await sendWhatsApp({
       to: member.phone!,
-      ...templates.paymentReceipt(member.name, await gymName(gymId), amount, forWhat),
+      ...templates.paymentReceipt(
+        member.name,
+        await gymName(gymId),
+        amount,
+        forWhat,
+        receiptDate(when),
+      ),
     });
   } catch (err) {
     console.error('[notify] payment receipt failed:', err);

@@ -234,9 +234,14 @@ describe('templates', () => {
       variables: ['Ali', 'Iron House', 'MEM-001'],
     });
 
-    expect(templates.paymentReceipt('Ali', 'Iron House', '2500', 'Monthly')).toEqual({
+    // The date is the fifth slot. Meta matches these by position against the
+    // approved body, so this order is a contract with the template in the
+    // console, not an implementation detail.
+    expect(
+      templates.paymentReceipt('Ali', 'Iron House', '2500', 'Monthly', '3 September 2026'),
+    ).toEqual({
       template: 'payment_receipt',
-      variables: ['Ali', 'Iron House', '2500', 'Monthly'],
+      variables: ['Ali', 'Iron House', '2500', 'Monthly', '3 September 2026'],
     });
   });
 });
