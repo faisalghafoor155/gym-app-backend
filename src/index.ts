@@ -49,6 +49,7 @@ import billingRoutes from "./routes/billing.js";
 import { hasLiveGateway } from "./services/gateways/index.js";
 import { hasPlatformGateway } from "./services/gateways/platform.js";
 import { biometricKeyStatus } from "./services/fingerprint/crypto.js";
+import { mailEnabled } from "./services/mail.js";
 import { startJobs } from "./jobs/index.js";
 
 // Fail loudly at boot rather than turning every login into a generic 500.
@@ -101,6 +102,55 @@ if (process.env.NODE_ENV === "production") {
     unsafe.push(
       `APP_URL is plain http (${appUrl}) — password-reset and invite links ` +
         "carry a token that anyone on the path can read and use.",
+    );
+  }
+
+  // HTTPS=true only *marks* the cookie Secure; it does not provide TLS. A
+  // deployment can therefore look correct here while its certificate belongs
+  // to a tunnel that dies on restart. APP_URL is the tell: reset and invite
+  // links are built from it and outlive the session that requested them, so a
+  // temporary hostname means links that 404 by the time somebody clicks them.
+  const ephemeralHosts = [
+    "trycloudflare.com",
+    "ngrok.io",
+    "ngrok-free.app",
+    "loca.lt",
+    "serveo.net",
+  ];
+  const host = appUrl.replace(/^https?:\/\//, "").split("/")[0];
+  const ephemeral = ephemeralHosts.find((h) => host.endsWith(h));
+  if (ephemeral) {
+    unsafe.push(
+      `APP_URL points at a temporary tunnel (${host}) — the hostname changes ` +
+        "when the tunnel restarts, and every password-reset and invite link " +
+        "already sent stops resolving. Point it at the permanent domain.",
+    );
+  }
+
+  // Behind a proxy every request carries the proxy's IP, so with no hops
+  // configured the rate limiter buckets the whole world together: one attacker
+  // exhausts the login budget for every gym at once. Deliberately not
+  // defaulted — the right number is the count of proxies actually in front of
+  // this process, and guessing it wrong is how X-Forwarded-For gets spoofed.
+  if (!process.env.TRUST_PROXY_HOPS) {
+    unsafe.push(
+      "TRUST_PROXY_HOPS is not set — rate limits count every request as " +
+        "coming from the proxy, so one attacker can lock out every user. Set " +
+        "it to the number of proxies in front of this app (1 for the Docker " +
+        "nginx alone; 2 with a CDN or tunnel in front of that).",
+    );
+  }
+
+  // The one that strands people. `sendMail` never throws and the
+  // forgot-password endpoint answers identically either way — both deliberate,
+  // and together they make a dead transport invisible from outside. A staff
+  // member who forgets their password has no way back in, and an owner's
+  // invite is never delivered, with nothing anywhere saying why.
+  if (!mailEnabled) {
+    unsafe.push(
+      "Mail is NOT configured — password resets and staff invites are written " +
+        "to this log instead of being delivered, and nothing tells the person " +
+        "waiting for them. Set RESEND_API_KEY, or the SMTP_* variables.",
     );
   }
 
@@ -222,6 +272,10 @@ app.use("/api/auth/accept-invite", authLimiter);
 // The 2FA challenge proves the password already, so each attempt here is a
 // guess at the second factor — it must cost the same as guessing a password.
 app.use("/api/auth/two-factor/verify-login", authLimiter);
+// Regenerating backup codes takes the account password, and the reward for
+// guessing it is a set of credentials that bypass the second factor. That is
+// a password-guessing endpoint whatever else it is, so it is throttled as one.
+app.use("/api/auth/two-factor/backup-codes", authLimiter);
 
 // Starting a checkout writes a row and calls out to a provider. Unthrottled,
 // one member holding the button down fills the intents table; a stranger
