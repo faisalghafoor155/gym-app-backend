@@ -442,6 +442,23 @@ export const transferOwnership = async (
       return;
     }
 
+    // A member's portal login is not a candidate. It is a customer's account —
+    // it carries a `memberId` and the app routes it to the member portal, not
+    // the dashboard — so handing it the gym leaves nobody able to run the
+    // place: the new owner cannot open their own portal (the member routes
+    // refuse an owner), and the outgoing owner has already been demoted to
+    // staff with no permissions and cannot take it back.
+    //
+    // Checked here rather than trusted from the picker: the transfer is the
+    // one action in the app with no way back, so the server has to be the one
+    // that says no.
+    if (target.role === 'member' || target.memberId) {
+      res.status(400).json({
+        error: 'That is a member account. Ownership can only go to a staff account.',
+      });
+      return;
+    }
+
     // Both accounts change role, so both sets of open sessions have to go —
     // otherwise the outgoing owner keeps owner access on any other device
     // until their token happens to expire.
