@@ -166,7 +166,7 @@ export const renew = async (
   res: Response,
 ): Promise<void> => {
   const { id: memberId, membershipId } = req.params;
-  const { planId, amount, method, channel, reference } = req.body;
+  const { planId, amount, method, channel, reference, includeTrainer, ptFee } = req.body;
   try {
     // Scoped by member and gym as well as id: a valid membership id belonging
     // to somebody else must read as missing, not as forbidden.
@@ -174,7 +174,7 @@ export const renew = async (
       where: { id: membershipId, memberId, gymId: req.gymId },
       include: {
         ...withPlan,
-        member: { select: { name: true, memberNo: true } },
+        member: { select: { name: true, memberNo: true, trainerId: true } },
       },
     });
     if (!membership) {
@@ -214,7 +214,7 @@ export const renew = async (
     const start = renewalStart(membership.expiryDate);
     const expiry = addDays(start, plan.durationDays);
 
-    const { created, payment } = await prisma.$transaction(async (tx) => {
+    const { created, payment, ptPayment, trainerRemoved } = await prisma.$transaction(async (tx) => {
       // The old membership steps aside rather than being edited: two rows is
       // what makes "what did this member buy, and when" answerable later.
       await tx.membership.update({
@@ -255,7 +255,46 @@ export const renew = async (
         },
       });
 
-      return { created: next, payment: receipt };
+      // Handle trainer renewal or auto-removal
+      let ptReceipt = null;
+      let removedTrainer = false;
+      const currentTrainerId = membership.member.trainerId;
+
+      if (currentTrainerId) {
+        if (includeTrainer === false) {
+          // If desk specifically chose NOT to renew trainer, unassign from member card
+          await tx.member.update({
+            where: { id: memberId },
+            data: { trainerId: null },
+          });
+          removedTrainer = true;
+        } else if (ptFee !== undefined && ptFee > 0) {
+          // If staff renewed with trainer fee, record the trainer fee payment receipt
+          const trainer = await tx.trainer.findFirst({
+            where: { id: currentTrainerId, gymId: req.gymId },
+            select: { id: true, name: true },
+          });
+
+          if (trainer) {
+            ptReceipt = await tx.payment.create({
+              data: {
+                gymId: req.gymId,
+                memberId,
+                amount: ptFee,
+                method,
+                channel: method === 'cash' ? null : channel ?? null,
+                reference: reference ?? null,
+                status: 'paid',
+                type: 'other',
+                recordedById: req.userId,
+                notes: `Trainer Fee (PT) Renewal — ${trainer.name}`,
+              },
+            });
+          }
+        }
+      }
+
+      return { created: next, payment: receipt, ptPayment: ptReceipt, trainerRemoved: removedTrainer };
     });
 
     await audit(req, {
@@ -267,6 +306,7 @@ export const renew = async (
         membershipId: membership.id,
         planName: membership.plan.name,
         expiryDate: membership.expiryDate,
+        trainerId: membership.member.trainerId,
       },
       after: {
         membershipId: created.id,
@@ -278,6 +318,8 @@ export const renew = async (
         amountPaid: amount,
         method,
         ...(payment.channel && { channel: payment.channel }),
+        ...(trainerRemoved && { trainerAction: 'removed' }),
+        ...(ptPayment && { ptFeePaid: ptFee, ptPaymentId: ptPayment.id }),
       },
     });
 

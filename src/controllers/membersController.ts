@@ -68,7 +68,7 @@ const memberFields = {
   status: true,
   createdAt: true,
   trainerId: true,
-  trainer: { select: { id: true, name: true } },
+  trainer: { select: { id: true, name: true, ptFee: true } },
   /**
    * The member's fingerprint enrolment, minus the template itself.
    *
