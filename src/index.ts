@@ -46,6 +46,7 @@ import analyticsRoutes from "./routes/analytics.js";
 import payoutsRoutes from "./routes/payouts.js";
 import subscriptionRoutes from "./routes/subscription.js";
 import billingRoutes from "./routes/billing.js";
+import aiRoutes from "./routes/ai.js";
 import { hasLiveGateway } from "./services/gateways/index.js";
 import { hasPlatformGateway } from "./services/gateways/platform.js";
 import { biometricKeyStatus } from "./services/fingerprint/crypto.js";
@@ -325,6 +326,7 @@ app.use("/api/analytics", analyticsRoutes);
 app.use("/api/payouts", payoutsRoutes);
 app.use("/api/subscription", subscriptionRoutes);
 app.use("/api/billing", billingRoutes);
+app.use("/api/ai", aiRoutes);
 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });
