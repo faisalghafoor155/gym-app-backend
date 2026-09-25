@@ -599,6 +599,7 @@ export const renewMembershipSchema = z
     method: z.enum(PAYMENT_METHODS, { error: "must be cash or online" }),
     ...paymentChannelFields,
     includeTrainer: z.boolean().optional(),
+    trainerId: uuid.or(blankToUndefined).optional(),
     ptFee: money.min(0).optional(),
   })
   .superRefine(rejectChannelOnCash);

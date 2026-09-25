@@ -166,7 +166,7 @@ export const renew = async (
   res: Response,
 ): Promise<void> => {
   const { id: memberId, membershipId } = req.params;
-  const { planId, amount, method, channel, reference, includeTrainer, ptFee } = req.body;
+  const { planId, amount, method, channel, reference, includeTrainer, trainerId, ptFee } = req.body;
   try {
     // Scoped by member and gym as well as id: a valid membership id belonging
     // to somebody else must read as missing, not as forbidden.
@@ -255,23 +255,30 @@ export const renew = async (
         },
       });
 
-      // Handle trainer renewal or auto-removal
+      // Handle trainer renewal, addition, or auto-removal
       let ptReceipt = null;
       let removedTrainer = false;
-      const currentTrainerId = membership.member.trainerId;
+      const targetTrainerId = trainerId || membership.member.trainerId;
 
-      if (currentTrainerId) {
-        if (includeTrainer === false) {
-          // If desk specifically chose NOT to renew trainer, unassign from member card
+      if (includeTrainer === false && membership.member.trainerId) {
+        // If desk specifically chose NOT to renew trainer, unassign from member card
+        await tx.member.update({
+          where: { id: memberId },
+          data: { trainerId: null },
+        });
+        removedTrainer = true;
+      } else if (targetTrainerId && (includeTrainer || trainerId)) {
+        // If trainer was newly added or changed on member
+        if (targetTrainerId !== membership.member.trainerId) {
           await tx.member.update({
             where: { id: memberId },
-            data: { trainerId: null },
+            data: { trainerId: targetTrainerId },
           });
-          removedTrainer = true;
-        } else if (ptFee !== undefined && ptFee > 0) {
-          // If staff renewed with trainer fee, record the trainer fee payment receipt
+        }
+
+        if (ptFee !== undefined && ptFee > 0) {
           const trainer = await tx.trainer.findFirst({
-            where: { id: currentTrainerId, gymId: req.gymId },
+            where: { id: targetTrainerId, gymId: req.gymId },
             select: { id: true, name: true },
           });
 
@@ -287,7 +294,7 @@ export const renew = async (
                 status: 'paid',
                 type: 'other',
                 recordedById: req.userId,
-                notes: `Trainer Fee (PT) Renewal — ${trainer.name}`,
+                notes: `Trainer Fee (PT) — ${trainer.name}`,
               },
             });
           }
