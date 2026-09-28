@@ -106,6 +106,8 @@ model Gym {
   /// Null means the gym has not set one, and the receipt simply omits the line
   /// rather than printing an empty space where an address should be.
   address String?
+  /// Gym branding logo (URL or inline data-URL)
+  logo    String?
 
   /// Whether this gym may be used at all.
   ///

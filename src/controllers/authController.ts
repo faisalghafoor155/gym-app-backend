@@ -34,6 +34,7 @@ const startSession = (res: Response, user: {
   gym: {
     id: string; name: string; ownerName: string;
     phone: string | null; address: string | null;
+    logo?: string | null;
   };
 }) => {
   setSessionCookie(res, user.id, user.tokenVersion);
@@ -50,6 +51,7 @@ const startSession = (res: Response, user: {
       ownerName: user.gym.ownerName,
       phone: user.gym.phone,
       address: user.gym.address,
+      logo: user.gym.logo ?? null,
     },
   };
 };
@@ -71,6 +73,7 @@ const sessionInclude = {
       ownerName: true,
       phone: true,
       address: true,
+      logo: true,
       suspendedAt: true,
       suspendedReason: true,
     },

@@ -1241,6 +1241,8 @@ export const updateGymSettingsSchema = z.object({
    * four lines somebody would actually print.
    */
   address: optionalText(300).optional(),
+  /** Gym branding logo (URL or inline data-URL) */
+  logo: z.string().nullable().optional(),
   /** What a trainer assignment costs when the trainer sets no price of their
    *  own. Zero is valid and means the gym charges nothing for it. */
   defaultPtFee: money,
