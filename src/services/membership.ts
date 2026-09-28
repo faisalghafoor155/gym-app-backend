@@ -5,13 +5,13 @@ export const EXPIRING_SOON_DAYS = 7;
 
 /**
  * How long after expiry a member stops being somebody the gym is still
- * expecting back. Two months of silence is the point at which they belong on
- * an archive list rather than in the day-to-day roster.
+ * expecting back. 1.5 months (45 days) of silence is the point at which they are auto-removed
+ * from the active/expired roster and placed in the archive/lapsed list.
  *
  * Like `expiring`, this is never written to a column — it is a function of
  * today's date, so a stored copy would start lying the next morning.
  */
-export const LAPSED_AFTER_DAYS = 60;
+export const LAPSED_AFTER_DAYS = 45;
 
 /**
  * Maximum days an expired membership can still be shown in the default 'All' tab (10 days grace period).
@@ -214,13 +214,13 @@ export const memberStatusWhere = (
         status: 'active',
         ...current({ status: 'active', expiryDate: { gte: today, lt: soonEnd } }),
       };
-    // Expired memberships show here
+    // Expired memberships show here (within the 45-day / 1.5-month window). Past 45 days, they are auto-removed to Lapsed/Archive.
     case 'expired':
       return {
         status: 'active',
         ...current({
           status: 'active',
-          expiryDate: { lt: today },
+          expiryDate: { lt: today, gte: lapsedBefore },
         }),
       };
     // Two ways to be off the roster: deactivated by hand, or gone long enough

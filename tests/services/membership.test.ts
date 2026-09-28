@@ -137,7 +137,7 @@ describe('isLapsed', () => {
     expect(isLapsed(membership('active', addDays(NOW, -LAPSED_AFTER_DAYS - 1)), NOW)).toBe(true);
   });
 
-  it('is still false exactly on the 60th day — the rule is strictly more than', () => {
+  it('is still false exactly on the 45th day — the rule is strictly more than', () => {
     expect(isLapsed(membership('active', addDays(NOW, -LAPSED_AFTER_DAYS)), NOW)).toBe(false);
   });
 
