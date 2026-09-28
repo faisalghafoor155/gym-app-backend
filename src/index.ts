@@ -12,6 +12,7 @@ import "./instrument.js";
 
 import express, { type ErrorRequestHandler } from "express";
 import path from "node:path";
+import fs from "node:fs";
 import {
   requestLogger,
   captureError,
@@ -340,8 +341,22 @@ app.get("/api/health", (_req, res) => {
 // Same-origin is the point, not a convenience: the session cookie is
 // sameSite 'lax', so a frontend on a different host than the API would never
 // have it sent and every request would arrive logged out.
-const staticDir = process.env.SERVE_STATIC_DIR;
-if (staticDir) {
+let staticDir = process.env.SERVE_STATIC_DIR;
+if (!staticDir) {
+  const candidates = [
+    path.resolve("../frontend/dist"),
+    path.resolve("./frontend/dist"),
+    path.resolve("dist-frontend"),
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(path.join(c, "index.html"))) {
+      staticDir = c;
+      break;
+    }
+  }
+}
+
+if (staticDir && fs.existsSync(staticDir)) {
   const root = path.resolve(staticDir);
 
   // Hashed Vite assets are immutable; everything else (index.html above all)
