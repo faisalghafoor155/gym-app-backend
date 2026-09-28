@@ -8,8 +8,10 @@ import {
   addDays,
   currentMembershipWhere,
   effectiveMemberStatus,
+  expiredOverGraceWhere,
   formatMemberNo,
   memberStatusWhere,
+  recentlyExpiredWhere,
   toView,
   withPlan,
 } from "../services/membership.js";
@@ -216,20 +218,20 @@ export const getAll = async (
           { phone: { contains: search, mode: "insensitive" as const } },
         ],
       }),
-      // No tab chosen means "everyone still on the books", which excludes the
-      // lapsed: somebody who stopped coming two months ago is reachable from
-      // their own tab rather than cluttering the default list.
+      // No tab chosen means "everyone still active or recently due (<= 10 days)",
+      // which excludes members expired over 10 days and lapsed members.
       //
-      // Two things override that. A search, because someone typing a name wants
-      // that person found and a box that silently refuses to return them reads
-      // as broken search rather than as a filter. And `all`, because a picker
-      // asking for every member means every member — a lapsed one is exactly
-      // who the front desk is about to sell a renewal to.
+      // Two things override that: an explicit search, and `all=true` for pickers.
       ...(status
         ? memberStatusWhere(status, now)
         : search || all
           ? {}
-          : { NOT: memberStatusWhere("lapsed", now) }),
+          : {
+              NOT: [
+                memberStatusWhere("lapsed", now),
+                expiredOverGraceWhere(now),
+              ],
+            }),
     };
 
     if (all) {
@@ -276,7 +278,7 @@ export const getAll = async (
         where: { ...searchWhere, ...memberStatusWhere(f, now) },
       });
 
-    const [members, total, active, expiring, expired, lapsed, none] =
+    const [members, total, active, expiring, expired, lapsed, none, recentExpired] =
       await Promise.all([
         prisma.member.findMany({
           where,
@@ -291,6 +293,9 @@ export const getAll = async (
         countFor("expired"),
         countFor("lapsed"),
         countFor("none"),
+        prisma.member.count({
+          where: { ...searchWhere, ...recentlyExpiredWhere(now) },
+        }),
       ]);
 
     res.json({
@@ -299,10 +304,10 @@ export const getAll = async (
       page,
       limit,
       hasMore: page * limit < total,
-      // "All" means everyone still on the books, which is everybody except the
-      // lapsed — the same rule the page's All tab applies.
+      // "All" means active, expiring, never bought, plus recently expired (<= 10 days).
+      // Members expired over 10 days appear in the Expired tab.
       counts: {
-        all: active + expiring + expired + none,
+        all: active + expiring + recentExpired + none,
         active,
         expiring,
         expired,

@@ -14,6 +14,12 @@ export const EXPIRING_SOON_DAYS = 7;
 export const LAPSED_AFTER_DAYS = 60;
 
 /**
+ * Maximum days an expired membership can still be shown in the default 'All' tab (10 days grace period).
+ * After 10 days of expiry, they no longer appear in 'All' and only show under the 'Expired' tab.
+ */
+export const EXPIRED_GRACE_DAYS_IN_ALL = 10;
+
+/**
  * What the front desk needs to see, which is not quite what the database
  * stores: `expiring` is a function of today's date, so it is derived here
  * rather than written to a column that would start lying the next morning.
@@ -208,13 +214,13 @@ export const memberStatusWhere = (
         status: 'active',
         ...current({ status: 'active', expiryDate: { gte: today, lt: soonEnd } }),
       };
-    // Expired but not yet lapsed — still somebody the gym expects back.
+    // Expired memberships show here
     case 'expired':
       return {
         status: 'active',
         ...current({
           status: 'active',
-          expiryDate: { lt: today, gte: lapsedBefore },
+          expiryDate: { lt: today },
         }),
       };
     // Two ways to be off the roster: deactivated by hand, or gone long enough
@@ -237,6 +243,37 @@ export const memberStatusWhere = (
         NOT: { memberships: { some: { ...currentMembershipWhere, status: 'active' } } },
       };
   }
+};
+
+/** Where clause to find members whose current membership expired more than EXPIRED_GRACE_DAYS_IN_ALL (10) days ago */
+export const expiredOverGraceWhere = (now: Date = new Date()): Prisma.MemberWhereInput => {
+  const cutoff = addDays(startOfDay(now), -EXPIRED_GRACE_DAYS_IN_ALL);
+  return {
+    status: 'active',
+    memberships: {
+      some: {
+        ...currentMembershipWhere,
+        status: 'active',
+        expiryDate: { lt: cutoff },
+      },
+    },
+  };
+};
+
+/** Where clause to find recently expired members (expired within the last 10 days) */
+export const recentlyExpiredWhere = (now: Date = new Date()): Prisma.MemberWhereInput => {
+  const today = startOfDay(now);
+  const cutoff = addDays(today, -EXPIRED_GRACE_DAYS_IN_ALL);
+  return {
+    status: 'active',
+    memberships: {
+      some: {
+        ...currentMembershipWhere,
+        status: 'active',
+        expiryDate: { lt: today, gte: cutoff },
+      },
+    },
+  };
 };
 
 /**
