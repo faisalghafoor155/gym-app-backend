@@ -17,6 +17,9 @@ import {
   checkoutInvoice,
   handleCallback,
   handleReturn,
+  getAdminBillingRequests,
+  approveAdminBillingRequest,
+  setAdminGymPlan,
 } from "../controllers/billingController.js";
 
 const router = Router();
@@ -82,5 +85,10 @@ router.post(
   validate(subscriptionCheckoutSchema),
   authed(checkoutInvoice),
 );
+
+// Platform Admin / Super Admin routes
+router.get("/admin/requests", requireOwner, authed(getAdminBillingRequests));
+router.post("/admin/approve", requireOwner, authed(approveAdminBillingRequest));
+router.post("/admin/set-plan", requireOwner, authed(setAdminGymPlan));
 
 export default router;

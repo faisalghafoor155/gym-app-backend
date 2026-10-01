@@ -398,10 +398,11 @@ describe('GET /subscription', () => {
 
     // The whole table travels too, so an upgrade prompt can name what the next
     // tier holds without the client keeping its own copy of the pricing.
-    expect(res.body.plans).toHaveLength(3);
+    expect(res.body.plans).toHaveLength(4);
     expect(res.body.plans.map((p: { plan: string }) => p.plan)).toEqual([
       'free',
       'basic',
+      'growth',
       'pro',
     ]);
   });

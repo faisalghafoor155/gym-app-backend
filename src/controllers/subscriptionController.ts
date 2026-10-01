@@ -8,6 +8,7 @@ import {
   PLAN_ORDER,
   subscriptionStatus,
 } from "../services/subscription.js";
+import { PLAN_PRICES } from "../services/billing.js";
 
 /**
  * The gym's tier, its entitlements, and how much of each limit is used.
@@ -30,6 +31,7 @@ export const getSubscription = async (
       plans: PLAN_ORDER.map((plan) => ({
         plan,
         label: PLAN_LABELS[plan],
+        price: PLAN_PRICES[plan] ?? 0,
         ...ENTITLEMENTS[plan],
       })),
     });

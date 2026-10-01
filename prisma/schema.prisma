@@ -84,8 +84,10 @@ enum GymPlan {
   /// Trial-sized. Enough to run a small gym's roster, with the costly features
   /// off.
   free
-  /// The everyday tier. Matches what every gym could do before plans existed.
+  /// 200 members tier. Starter plan.
   basic
+  /// 400 members tier. Growth plan.
+  growth
   /// Unlimited roster, plus the features that cost real money to run —
   /// WhatsApp, biometrics, and taking payments online.
   pro

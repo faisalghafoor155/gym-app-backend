@@ -21,6 +21,7 @@ import {
   settleInvoice,
 } from "../services/billing.js";
 import type { SubscribeBody, SubscriptionCheckoutBody } from "../schemas.js";
+import { PLAN_LABELS, type GymPlan } from "../services/subscription.js";
 
 /**
  * A gym paying us for its subscription.
@@ -442,3 +443,158 @@ const auditSystem = async (
 
 /** Exported for the tests that exercise the race between two callbacks. */
 export const __testing = { auditSystem, isBillable };
+
+/**
+ * Platform Owner / Super Admin check.
+ */
+export const isPlatformAdmin = (email?: string): boolean => {
+  if (!email) return false;
+  const adminEmail = (process.env.PLATFORM_ADMIN_EMAIL ?? "faisalghafoor015@gmail.com")
+    .toLowerCase()
+    .trim();
+  return email.toLowerCase().trim() === adminEmail;
+};
+
+/**
+ * Returns all gym subscription upgrade requests and all gyms for the Platform Owner.
+ */
+export const getAdminBillingRequests = async (
+  req: AuthedRequest,
+  res: Response,
+): Promise<void> => {
+  if (!isPlatformAdmin(req.userEmail)) {
+    res.json({ isMasterAdmin: false, pendingRequests: [], allGyms: [] });
+    return;
+  }
+
+  try {
+    const gyms = await prisma.gym.findMany({
+      include: {
+        users: {
+          where: { role: "owner" },
+          select: { name: true, email: true },
+        },
+        subscription: {
+          include: {
+            invoices: {
+              where: { status: "open" },
+              orderBy: { issuedAt: "desc" },
+            },
+          },
+        },
+        _count: {
+          select: {
+            members: { where: { status: "active" } },
+          },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    const pendingRequests = [];
+    const allGyms = [];
+
+    for (const g of gyms) {
+      const owner = g.users[0];
+      allGyms.push({
+        id: g.id,
+        name: g.name,
+        ownerName: owner?.name ?? g.ownerName,
+        email: owner?.email ?? "—",
+        phone: g.phone,
+        plan: g.plan,
+        planLabel: PLAN_LABELS[g.plan],
+        activeMembers: g._count.members,
+      });
+
+      if (g.subscription?.invoices) {
+        for (const inv of g.subscription.invoices) {
+          pendingRequests.push({
+            invoiceId: inv.id,
+            gymId: g.id,
+            gymName: g.name,
+            ownerName: owner?.name ?? g.ownerName,
+            email: owner?.email ?? "—",
+            phone: g.phone,
+            currentPlan: g.plan,
+            currentPlanLabel: PLAN_LABELS[g.plan],
+            requestedPlan: inv.plan,
+            requestedPlanLabel: PLAN_LABELS[inv.plan],
+            amount: inv.amount.toNumber(),
+            issuedAt: inv.issuedAt,
+            dueDate: inv.dueDate,
+          });
+        }
+      }
+    }
+
+    res.json({
+      isMasterAdmin: true,
+      pendingRequests,
+      allGyms,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+/**
+ * Approves a gym's subscription request, marking invoice as PAID and activating the plan.
+ */
+export const approveAdminBillingRequest = async (
+  req: AuthedRequest<Record<string, string>, unknown, { invoiceId: string; note?: string }>,
+  res: Response,
+): Promise<void> => {
+  if (!isPlatformAdmin(req.userEmail)) {
+    res.status(403).json({ error: "Only the platform owner can approve subscriptions" });
+    return;
+  }
+
+  const { invoiceId, note } = req.body;
+  if (!invoiceId) {
+    res.status(400).json({ error: "invoiceId is required" });
+    return;
+  }
+
+  try {
+    await settleInvoice(invoiceId, {
+      note: note ?? "Approved & Activated by Platform Owner",
+    });
+    res.json({ success: true, message: "Subscription approved and plan activated successfully!" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not approve subscription" });
+  }
+};
+
+/**
+ * Directly updates any gym's plan (Master override).
+ */
+export const setAdminGymPlan = async (
+  req: AuthedRequest<Record<string, string>, unknown, { gymId: string; plan: GymPlan }>,
+  res: Response,
+): Promise<void> => {
+  if (!isPlatformAdmin(req.userEmail)) {
+    res.status(403).json({ error: "Only the platform owner can change plans directly" });
+    return;
+  }
+
+  const { gymId, plan } = req.body;
+  if (!gymId || !plan) {
+    res.status(400).json({ error: "gymId and plan are required" });
+    return;
+  }
+
+  try {
+    await prisma.gym.update({
+      where: { id: gymId },
+      data: { plan },
+    });
+    const planLabel = PLAN_LABELS[plan as GymPlan] || plan;
+    res.json({ success: true, message: `Gym plan updated to ${planLabel}` });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not update gym plan" });
+  }
+};

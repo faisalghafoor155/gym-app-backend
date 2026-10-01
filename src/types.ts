@@ -15,6 +15,7 @@ export interface AuthedRequest<
 > extends Request<Params, ResBody, ReqBody, Query> {
   gymId: string;
   userId: string;
+  userEmail?: string;
   role: Role;
   /** Staff permission level (only set when role is 'staff') */
   staffPermission?: StaffPermission;

@@ -11,6 +11,7 @@ import type {
 import { findValidInvite } from '../services/invite.js';
 import { verifyGoogleToken } from '../services/google.js';
 import { DEFAULT_PLANS } from '../services/membership.js';
+import { ensureSubscription, issueInvoiceIfDue } from '../services/billing.js';
 import { sendMail, passwordResetMail } from '../services/mail.js';
 import {
   issueEmailVerification, consumeEmailVerification,
@@ -119,7 +120,7 @@ export const register = async (
   req: Request<unknown, unknown, RegisterBody>,
   res: Response,
 ): Promise<void> => {
-  const { gymName, ownerName, email, password, phone } = req.body;
+  const { gymName, ownerName, email, password, phone, plan } = req.body;
   try {
     const existing = await prisma.user.findUnique({ where: { email } });
     if (existing) {
@@ -128,8 +129,16 @@ export const register = async (
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
+    const selectedPlan = plan && plan !== 'free' ? plan : 'free';
     const user = await prisma.$transaction(async (tx) => {
-      const gym = await tx.gym.create({ data: { name: gymName, ownerName, phone } });
+      const gym = await tx.gym.create({
+        data: {
+          name: gymName,
+          ownerName,
+          phone,
+          plan: selectedPlan,
+        },
+      });
 
       // A new gym starts with a price list to edit rather than an empty table.
       // Priced at zero on purpose — a made-up price looks like a real one.
@@ -146,6 +155,15 @@ export const register = async (
         include: sessionInclude,
       });
     });
+
+    if (plan && plan !== 'free') {
+      try {
+        const sub = await ensureSubscription(user.gym.id, plan);
+        await issueInvoiceIfDue(sub.id, new Date());
+      } catch (err) {
+        console.error('[register] could not initialize subscription', err);
+      }
+    }
 
     // After the transaction, and not awaited into it: a mail transport being
     // slow or down must not roll back a gym that has already been created.

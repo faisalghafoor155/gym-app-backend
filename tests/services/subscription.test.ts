@@ -130,7 +130,8 @@ describe('what would fix it', () => {
 
   it('names the cheapest tier that would hold the count', () => {
     expect(cheapestPlanFor('members', 51)).toBe('basic');
-    expect(cheapestPlanFor('members', 301)).toBe('pro');
+    expect(cheapestPlanFor('members', 201)).toBe('growth');
+    expect(cheapestPlanFor('members', 401)).toBe('pro');
     // Uncapped holds anything.
     expect(cheapestPlanFor('members', 10_000)).toBe('pro');
   });
@@ -139,7 +140,7 @@ describe('what would fix it', () => {
     // Staff is capped even on Pro, so asking for more than Pro allows has no
     // answer — and a prompt naming a tier that would not help is worse than
     // one that names none.
-    expect(cheapestPlanFor('staff', 16)).toBeNull();
+    expect(cheapestPlanFor('staff', 26)).toBeNull();
   });
 });
 
@@ -171,7 +172,7 @@ describe('how a refusal reads', () => {
   });
 
   it('does not promise an upgrade that would not help', () => {
-    const { body } = planErrorResponse(new PlanLimitError('staff', 'pro', 15));
+    const { body } = planErrorResponse(new PlanLimitError('staff', 'pro', 25));
 
     expect(body.upgradeTo).toBeNull();
     // No "upgrade to" clause, because there is nothing to upgrade to.

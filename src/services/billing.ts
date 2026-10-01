@@ -30,6 +30,7 @@ import { PLAN_LABELS, PLAN_ORDER } from "./subscription.js";
 export const PLAN_PRICES: Record<GymPlan, number> = {
   free: 0,
   basic: Number(process.env.PLAN_PRICE_BASIC ?? 3000),
+  growth: Number(process.env.PLAN_PRICE_GROWTH ?? 5000),
   pro: Number(process.env.PLAN_PRICE_PRO ?? 8000),
 };
 

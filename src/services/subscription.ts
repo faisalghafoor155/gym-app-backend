@@ -1,6 +1,7 @@
 /** @format */
 
 import { Prisma, type GymPlan } from "@prisma/client";
+export type { GymPlan };
 import prisma from "../db.js";
 
 /**
@@ -96,12 +97,10 @@ export const ENTITLEMENTS: Record<GymPlan, Entitlements> = {
   },
 
   /**
-   * The everyday tier, sized so that every gym running before plans existed
-   * keeps working unchanged — six staff seats is exactly the figure that used
-   * to be hardcoded for everyone.
+   * 200 active members tier. Starter plan.
    */
   basic: {
-    limits: { members: 300, staff: 6, trainers: 10, classes: 20 },
+    limits: { members: 200, staff: 6, trainers: 10, classes: 20 },
     features: {
       ...NOTHING.features,
       whatsapp: true,
@@ -109,10 +108,23 @@ export const ENTITLEMENTS: Record<GymPlan, Entitlements> = {
     },
   },
 
+  /**
+   * 400 active members tier. Growth plan.
+   */
+  growth: {
+    limits: { members: 400, staff: 10, trainers: 20, classes: 35 },
+    features: {
+      ...NOTHING.features,
+      whatsapp: true,
+      analytics: true,
+      onlinePayments: true,
+    },
+  },
+
   /** No ceiling on the roster, and the features that cost the gym real money
    *  to run: hardware at the door and money moving through the app. */
   pro: {
-    limits: { members: null, staff: 15, trainers: null, classes: null },
+    limits: { members: null, staff: 25, trainers: null, classes: null },
     features: {
       whatsapp: true,
       biometrics: true,
@@ -126,11 +138,12 @@ export const ENTITLEMENTS: Record<GymPlan, Entitlements> = {
 export const PLAN_LABELS: Record<GymPlan, string> = {
   free: "Free",
   basic: "Basic",
+  growth: "Growth",
   pro: "Pro",
 };
 
 /** The tiers in order, so "what would fix this" can walk upwards. */
-export const PLAN_ORDER: readonly GymPlan[] = ["free", "basic", "pro"] as const;
+export const PLAN_ORDER: readonly GymPlan[] = ["free", "basic", "growth", "pro"] as const;
 
 export const entitlementsFor = (plan: GymPlan): Entitlements =>
   ENTITLEMENTS[plan] ?? NOTHING;

@@ -138,6 +138,7 @@ export const registerSchema = z.object({
     .min(8, "must be at least 8 characters")
     .max(200, "is too long"),
   phone: optionalText(30),
+  plan: z.enum(['free', 'basic', 'growth', 'pro']).default('free').optional(),
 });
 
 export const loginSchema = z.object({
@@ -1326,7 +1327,7 @@ export const subscriptionCheckoutSchema = z.object({
  * for, which is an operator's decision rather than a self-serve one.
  */
 export const subscribeSchema = z.object({
-  plan: z.enum(['basic', 'pro']),
+  plan: z.enum(['basic', 'growth', 'pro']),
 });
 
 // --- inferred request-body types ---------------------------------------

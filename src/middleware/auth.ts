@@ -61,6 +61,7 @@ export const requireAuth = async (
       select: {
         id: true,
         gymId: true,
+        email: true,
         name: true,
         role: true,
         isActive: true,
@@ -122,6 +123,7 @@ export const requireAuth = async (
     const r = req as Request & {
       gymId: string;
       userId: string;
+      userEmail?: string;
       role: typeof user.role;
       staffPermission?: typeof user.staffPermission;
       actorName: string;
@@ -129,6 +131,7 @@ export const requireAuth = async (
     };
     r.gymId = user.gymId;
     r.userId = user.id;
+    r.userEmail = user.email;
     r.role = user.role;
     r.actorName = user.name;
     r.memberId = user.memberId;
