@@ -215,7 +215,28 @@ app.set(
 // for being oversized is still logged and still carries an id to quote.
 app.use(requestLogger);
 
-app.use(helmet());
+// Helmet's default CSP carries `upgrade-insecure-requests`, and it sends HSTS.
+// Both assume TLS. On a deployment that is honestly plain http — the desktop
+// app reached from a phone on the gym's Wi-Fi (http://192.168.x.x:5000), or
+// Docker without the https overlay — a phone obeys the CSP, rewrites every
+// script and stylesheet to https://, fails to load them, and shows a blank
+// page. Desktop never sees it because browsers exempt localhost. HTTPS=false
+// is the explicit statement that there is no TLS, so only then are they off
+// (and in development, which never has TLS either).
+const plainHttp =
+  process.env.HTTPS === "false" || process.env.NODE_ENV !== "production";
+app.use(
+  helmet(
+    plainHttp
+      ? {
+          contentSecurityPolicy: {
+            directives: { upgradeInsecureRequests: null },
+          },
+          hsts: false,
+        }
+      : undefined,
+  ),
+);
 
 // In production only the configured origins may call the API. CORS_ORIGIN is a
 // comma-separated list; when the frontend is served by the same nginx as the
