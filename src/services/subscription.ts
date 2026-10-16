@@ -145,8 +145,31 @@ export const PLAN_LABELS: Record<GymPlan, string> = {
 /** The tiers in order, so "what would fix this" can walk upwards. */
 export const PLAN_ORDER: readonly GymPlan[] = ["free", "basic", "growth", "pro"] as const;
 
+/**
+ * Master switch for plans, limits and billing. Off unless
+ * `SUBSCRIPTIONS_ENABLED=true`: while off, every gym gets everything with no
+ * ceiling, no invoices are issued and the billing routes answer 404. Flip it
+ * on to bring the whole tier system back — nothing is deleted while it is off.
+ *
+ * Read on each call rather than once at import, so the test setup can turn it
+ * on after this module has loaded.
+ */
+export const subscriptionsEnabled = (): boolean =>
+  process.env.SUBSCRIPTIONS_ENABLED === "true";
+
+/** What every gym gets while subscriptions are switched off. */
+const UNRESTRICTED: Entitlements = {
+  limits: { members: null, staff: null, trainers: null, classes: null },
+  features: {
+    whatsapp: true,
+    biometrics: true,
+    analytics: true,
+    onlinePayments: true,
+  },
+};
+
 export const entitlementsFor = (plan: GymPlan): Entitlements =>
-  ENTITLEMENTS[plan] ?? NOTHING;
+  subscriptionsEnabled() ? (ENTITLEMENTS[plan] ?? NOTHING) : UNRESTRICTED;
 
 /** Whether a tier includes a feature. */
 export const planHasFeature = (
@@ -241,6 +264,7 @@ export const subscriptionStatus = async (gymId: string) => {
   const { limits, features } = entitlementsFor(plan);
 
   return {
+    enabled: subscriptionsEnabled(),
     plan,
     planLabel: PLAN_LABELS[plan],
     features,

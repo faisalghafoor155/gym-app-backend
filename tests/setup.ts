@@ -67,7 +67,9 @@ export default async function setup(): Promise<void> {
   // Handed to the test processes; `db.ts` picks it up when first imported.
   process.env.DATABASE_URL = testUrl;
   process.env.NODE_ENV = 'test';
-  process.env.JWT_SECRET ??= 'test-secret-at-least-32-characters-long!!';
+  // The suite covers limits and billing, which only exist with the switch on.
+  process.env.SUBSCRIPTIONS_ENABLED ??= 'true';
+  process.env.JWT_SECRET ??='test-secret-at-least-32-characters-long!!';
   // A fixed 32-byte key so the suite can enrol and read back templates. Every
   // run starts from an empty database, so nothing is ever encrypted under one
   // run's key and read under another's.

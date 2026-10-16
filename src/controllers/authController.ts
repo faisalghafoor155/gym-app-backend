@@ -12,6 +12,7 @@ import { findValidInvite } from '../services/invite.js';
 import { verifyGoogleToken } from '../services/google.js';
 import { DEFAULT_PLANS } from '../services/membership.js';
 import { ensureSubscription, issueInvoiceIfDue } from '../services/billing.js';
+import { subscriptionsEnabled } from '../services/subscription.js';
 import { sendMail, passwordResetMail } from '../services/mail.js';
 import {
   issueEmailVerification, consumeEmailVerification,
@@ -156,7 +157,7 @@ export const register = async (
       });
     });
 
-    if (plan && plan !== 'free') {
+    if (subscriptionsEnabled() && plan && plan !== 'free') {
       try {
         const sub = await ensureSubscription(user.gym.id, plan);
         await issueInvoiceIfDue(sub.id, new Date());

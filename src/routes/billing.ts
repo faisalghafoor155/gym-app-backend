@@ -6,6 +6,7 @@ import auth from "../middleware/auth.js";
 import validate from "../middleware/validate.js";
 import { requireOwner } from "../middleware/requireRole.js";
 import { authed } from "../types.js";
+import { subscriptionsEnabled } from "../services/subscription.js";
 import {
   providerParams,
   subscribeSchema,
@@ -61,6 +62,13 @@ router.post(
 );
 
 router.use(auth);
+
+// Switched off: nothing to show or buy. The gateway callbacks above stay open
+// so a payment already in flight when the switch was flipped still lands.
+router.use((_req, res, next) => {
+  if (subscriptionsEnabled()) return next();
+  res.status(404).json({ error: "Subscriptions are turned off" });
+});
 
 /**
  * Owner-only, all of it.

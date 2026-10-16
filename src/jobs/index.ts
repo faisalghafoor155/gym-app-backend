@@ -2,6 +2,7 @@ import cron from 'node-cron';
 import { runExpiryReminders } from './expiryReminders.js';
 import { runFingerprintRetention } from './fingerprintRetention.js';
 import { runSubscriptionBilling } from './subscriptionBilling.js';
+import { subscriptionsEnabled } from '../services/subscription.js';
 
 /**
  * The scheduler, kept apart from the work it schedules.
@@ -110,12 +111,16 @@ export const startJobs = (): void => {
     },
   );
 
-  schedule('subscription billing', 'BILLING_CRON', BILLING_SCHEDULE, async () => {
-    const run = await runSubscriptionBilling();
-    return (
-      `subscriptions ${run.due}, invoiced ${run.issued}, chased ${run.noticed}, ` +
-      `no owner email ${run.noticeSkippedNoEmail}, suspended ${run.suspended}, ` +
-      `already suspended ${run.alreadySuspended}, failed ${run.failed}`
-    );
-  });
+  // Not scheduled at all while subscriptions are off: no invoices, no
+  // reminder mails, and no gym suspended for a bill it was never sent.
+  if (subscriptionsEnabled()) {
+    schedule('subscription billing', 'BILLING_CRON', BILLING_SCHEDULE, async () => {
+      const run = await runSubscriptionBilling();
+      return (
+        `subscriptions ${run.due}, invoiced ${run.issued}, chased ${run.noticed}, ` +
+        `no owner email ${run.noticeSkippedNoEmail}, suspended ${run.suspended}, ` +
+        `already suspended ${run.alreadySuspended}, failed ${run.failed}`
+      );
+    });
+  }
 };
