@@ -9,7 +9,7 @@ import {
   updateUserSchema, transferOwnershipSchema, userQuerySchema,
 } from '../schemas.js';
 import {
-  getAll, createStaff, createMemberLogin, update, remove, transferOwnership,
+  getAll, createStaff, createMemberLogin, update, remove, transferOwnership, resendInvite,
 } from '../controllers/usersController.js';
 
 const router = Router();
@@ -27,6 +27,9 @@ router.get(
 
 router.post('/staff', requirePermission('canManageStaff'), validate(createStaffSchema), authed(createStaff));
 router.post('/member-login', requirePermission('canManageStaff'), validate(createMemberLoginSchema), authed(createMemberLogin));
+
+// A new link for an account still waiting on its first password.
+router.post('/:id/invite', requirePermission('canManageStaff'), validate(idParam, 'params'), authed(resendInvite));
 
 // Transferring the whole gym is strictly the owner's.
 router.post('/transfer-ownership', requireOwner, validate(transferOwnershipSchema), authed(transferOwnership));

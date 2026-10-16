@@ -64,17 +64,14 @@ const gymName = async (gymId: string): Promise<string> => {
 /**
  * What the client is told about an invite.
  *
- * The link comes back only when no mail was sent — the owner then has to pass
- * it on themselves, and hiding it would strand the account. When mail did go
- * out the link stays server-side, so it cannot be read off a screen by whoever
- * is standing at the front desk.
+ * The link always comes back to whoever created the account. When no mail
+ * went out it is the only way the account can be handed over; when mail did
+ * go, the owner may still want to send it on WhatsApp, which is how most staff
+ * are actually reached. Only owners and managers see this — the same people
+ * who could have set the password themselves.
  */
-const inviteInfo = (invite: { link: string; emailed: boolean } | null) => {
-  if (!invite) return null;
-  return invite.emailed
-    ? { emailed: true as const }
-    : { emailed: false as const, link: invite.link };
-};
+const inviteInfo = (invite: { link: string; emailed: boolean } | null) =>
+  invite && { emailed: invite.emailed, link: invite.link };
 
 /** Everyone who can sign in to this gym, and how many staff seats are left. */
 export const getAll = async (
@@ -97,7 +94,7 @@ export const getAll = async (
     const [users, total, seats] = await Promise.all([
       prisma.user.findMany({
         where,
-        select: { ...publicFields, member: { select: { id: true, name: true } } },
+        select: { ...publicFields, passwordHash: true, member: { select: { id: true, name: true } } },
         orderBy: [{ role: 'asc' }, { createdAt: 'desc' }],
         skip: (page - 1) * limit,
         take: limit,
@@ -109,8 +106,13 @@ export const getAll = async (
     // fills in a form that would be refused. The server still refuses it —
     // this is the courtesy, not the rule. Counted over the gym rather than the
     // page or the filter: a seat is used whether or not the search found it.
+    // Whether the account still waits on its invite, without sending the hash.
+    const listed = users.map(({ passwordHash, ...rest }) => ({
+      ...rest,
+      invitePending: passwordHash === null,
+    }));
     res.json({
-      users,
+      users: listed,
       seats,
       total,
       page,
@@ -380,6 +382,57 @@ export const update = async (
       });
       return;
     }
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * Sends a fresh invite to an account that has not set its password yet.
+ *
+ * For the invite that never arrived or has expired. Issuing a new one
+ * invalidates the old link, so the owner can resend without worrying about
+ * which copy is live.
+ */
+export const resendInvite = async (
+  req: AuthedRequest<IdParam>,
+  res: Response,
+): Promise<void> => {
+  const { id } = req.params;
+  try {
+    const target = await prisma.user.findFirst({
+      where: { id, gymId: req.gymId },
+      select: { id: true, name: true, email: true, role: true, isActive: true, passwordHash: true },
+    });
+    if (!target) {
+      res.status(404).json({ error: 'Account not found' });
+      return;
+    }
+    if (target.role === 'owner' || target.passwordHash !== null) {
+      res.status(400).json({ error: 'This account already has a password. They can use “Forgot password” instead.' });
+      return;
+    }
+    if (!target.isActive) {
+      res.status(400).json({ error: 'This account is deactivated. Activate it before sending an invite.' });
+      return;
+    }
+
+    const invite = await issueInvite(target.id, {
+      email: target.email,
+      gymName: await gymName(req.gymId),
+      role: target.role === 'member' ? 'member' : 'staff',
+      invitedBy: req.actorName,
+    });
+
+    await audit(req, {
+      action: 'staff.reinvite',
+      entity: 'user',
+      entityId: target.id,
+      entityLabel: `${target.name} · ${target.role}`,
+    });
+
+    res.json({ invite: inviteInfo(invite) });
+  } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
   }

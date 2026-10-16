@@ -8,7 +8,7 @@ import type {
   RegisterBody, LoginBody, ForgotPasswordBody, ResetPasswordBody,
   GoogleAuthBody, ChangePasswordBody, AcceptInviteBody,
 } from '../schemas.js';
-import { findValidInvite } from '../services/invite.js';
+import { appUrl, findValidInvite } from '../services/invite.js';
 import { verifyGoogleToken } from '../services/google.js';
 import { DEFAULT_PLANS } from '../services/membership.js';
 import { ensureSubscription, issueInvoiceIfDue } from '../services/billing.js';
@@ -421,7 +421,7 @@ export const forgotPassword = async (
       data: { resetTokenHash, resetTokenAt: new Date() },
     });
 
-    const link = `${process.env.APP_URL ?? 'http://localhost:8080'}/reset-password?token=${token}`;
+    const link = `${appUrl()}/reset-password?token=${token}`;
 
     // Awaited, so a mail server that hangs shows up as a slow request rather
     // than a silently dropped reset. `sendMail` never throws and logs the link

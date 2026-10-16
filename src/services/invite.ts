@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import prisma from '../db.js';
 import { sendMail, inviteMail, mailEnabled } from './mail.js';
+import { reachableUrl } from './lanAddress.js';
 
 /**
  * Inviting somebody instead of choosing a password for them.
@@ -15,8 +16,10 @@ import { sendMail, inviteMail, mailEnabled } from './mail.js';
 export const INVITE_TTL_HOURS = 48;
 const INVITE_TTL_MS = INVITE_TTL_HOURS * 60 * 60 * 1000;
 
+/** Where emailed links point. A `localhost` APP_URL is swapped for this PC's
+ *  LAN address, since the link is usually opened on a phone. */
 export const appUrl = (): string =>
-  process.env.APP_URL ?? 'http://localhost:8080';
+  reachableUrl(process.env.APP_URL ?? 'http://localhost:8080');
 
 /** Only the hash is stored, so a database leak does not hand over live links. */
 const hash = (token: string): string =>
