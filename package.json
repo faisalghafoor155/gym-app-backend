@@ -19,7 +19,8 @@
     "retention:fingerprints": "tsx scripts/runRetention.ts",
     "plan": "tsx scripts/setPlan.ts",
     "gym": "tsx scripts/suspendGym.ts",
-    "billing": "tsx scripts/billing.ts"
+    "billing": "tsx scripts/billing.ts",
+    "2fa:reset": "tsx scripts/resetTwoFactor.ts"
   },
   "keywords": [],
   "author": "",
