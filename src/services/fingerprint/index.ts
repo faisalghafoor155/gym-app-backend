@@ -30,9 +30,12 @@ export type {
  * covers both device shapes with fakes, so a new file can be checked against
  * the same expectations before it is ever plugged in.
  */
+import { zkteco } from './zkteco.js';
+import { virtualScanner } from './virtual.js';
+
 const ALL: readonly FingerprintDevice[] = [
-  // A real reader goes here. Until one does, `activeDevice()` falls back to
-  // `noDevice` and the fingerprint tab renders as "not set up".
+  zkteco,
+  virtualScanner,
 ];
 
 /**

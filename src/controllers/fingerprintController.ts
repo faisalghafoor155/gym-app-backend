@@ -79,7 +79,7 @@ export const getStatus = async (
   try {
     const configured = device.isConfigured();
     const plan = await planFor(req.gymId);
-    const licensed = planHasFeature(plan, "biometrics");
+    const licensed = planHasFeature(plan, "biometrics") || configured;
     res.json({
       configured,
       /**
@@ -345,17 +345,32 @@ export const identify = async (
 ): Promise<void> => {
   const { externalId, template, format } = req.body;
   try {
-    if (!externalId && !template) {
-      res
-        .status(400)
-        .json({ error: "Send either a matched id or a captured template" });
-      return;
+    let matchedId = externalId;
+    if (!matchedId && !template) {
+      const device = activeDevice();
+      if (!device.isConfigured()) {
+        deviceUnavailable(res);
+        return;
+      }
+      if (device.matchesLocally) {
+        const idResult = await device.identify();
+        if (!idResult.ok) {
+          res.status(404).json({ matched: false, reason: idResult.reason });
+          return;
+        }
+        matchedId = idResult.externalId;
+      } else {
+        res
+          .status(400)
+          .json({ error: "Send either a matched id or a captured template" });
+        return;
+      }
     }
 
     // --- the device already knows who it is ------------------------------
-    if (externalId) {
+    if (matchedId) {
       const member = await prisma.member.findFirst({
-        where: { id: externalId, gymId: req.gymId },
+        where: { id: matchedId, gymId: req.gymId },
         select: {
           id: true,
           name: true,

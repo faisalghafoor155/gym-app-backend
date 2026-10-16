@@ -50,6 +50,26 @@ const dayBounds = (now: Date): { start: Date; end: Date } => {
 };
 
 /**
+ * What the current membership cost and how much of it has been paid.
+ *
+ * Counted the same way the dues list counts it: only settled payments linked
+ * to this membership, and a balance that never goes negative — overpaying is
+ * not a debt.
+ */
+const feeSummary = (
+  view: { pricePaid: number } | null,
+  payments: { amount: Prisma.Decimal }[],
+): { amount: number; paid: number; balance: number } | null => {
+  if (!view) return null;
+  const paid = payments.reduce((t, p) => t + p.amount.toNumber(), 0);
+  return {
+    amount: view.pricePaid,
+    paid,
+    balance: Math.max(0, view.pricePaid - paid),
+  };
+};
+
+/**
  * Records that a member turned up.
  *
  * Two things this deliberately does *not* do:
@@ -84,7 +104,11 @@ export const checkin = async (
           where: currentMembershipWhere,
           orderBy: { createdAt: 'desc' },
           take: 1,
-          include: withPlan,
+          include: {
+            ...withPlan,
+            // Settled money only; a row still marked due is the debt itself.
+            payments: { where: { status: 'paid' }, select: { amount: true } },
+          },
         },
       },
     });
@@ -99,6 +123,7 @@ export const checkin = async (
     // What the desk needs to know before waving somebody through, and the same
     // shape the members list already speaks.
     const membership = current ? toView(current, now) : null;
+    const fee = feeSummary(membership, current?.payments ?? []);
 
     const existing = await prisma.attendance.findFirst({
       where: { memberId, gymId: req.gymId, checkedInAt: { gte: start, lte: end } },
@@ -107,7 +132,7 @@ export const checkin = async (
     if (existing) {
       // 200 rather than 201: nothing was created. `alreadyCheckedIn` is what
       // lets the page say so instead of claiming a fresh arrival.
-      res.json({ ...(await signMember(existing)), membership, alreadyCheckedIn: true });
+      res.json({ ...(await signMember(existing)), membership, fee, alreadyCheckedIn: true });
       return;
     }
 
@@ -119,6 +144,7 @@ export const checkin = async (
       res.status(201).json({
         ...(await signMember(record)),
         membership,
+        fee,
         alreadyCheckedIn: false,
       });
     } catch (err) {
@@ -133,7 +159,7 @@ export const checkin = async (
           include: memberSummary,
         });
         if (winner) {
-          res.json({ ...(await signMember(winner)), membership, alreadyCheckedIn: true });
+          res.json({ ...(await signMember(winner)), membership, fee, alreadyCheckedIn: true });
           return;
         }
       }
