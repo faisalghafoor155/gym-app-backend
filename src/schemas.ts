@@ -630,6 +630,9 @@ export const auditLogQuerySchema = z
 
 export const checkinSchema = z.object({ memberId: uuid });
 
+/** A member checking in from their own phone with the token from the gym QR. */
+export const selfCheckinSchema = z.object({ token: z.string().min(1).max(2000) });
+
 // --- fingerprint -------------------------------------------------------
 
 /**
@@ -1367,6 +1370,7 @@ export type RenewMembershipBody = z.infer<typeof renewMembershipSchema>;
 export type MembershipParams = z.infer<typeof membershipParams>;
 export type AuditLogQuery = z.infer<typeof auditLogQuerySchema>;
 export type CheckinBody = z.infer<typeof checkinSchema>;
+export type SelfCheckinBody = z.infer<typeof selfCheckinSchema>;
 export type EnrollFingerprintBody = z.infer<typeof enrollFingerprintSchema>;
 export type IdentifyFingerprintBody = z.infer<typeof identifyFingerprintSchema>;
 export type PaymentChannel = (typeof PAYMENT_CHANNELS)[number];

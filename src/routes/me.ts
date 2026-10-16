@@ -14,11 +14,13 @@ import {
   getMySchedule,
   updateMyProfile,
 } from "../controllers/meController.js";
+import { selfCheckin } from "../controllers/attendanceController.js";
 import {
   bookMyClassSchema,
   idParam,
   myHistoryQuerySchema,
   myScheduleQuerySchema,
+  selfCheckinSchema,
   updateMyProfileSchema,
 } from "../schemas.js";
 
@@ -72,5 +74,9 @@ router.delete(
   validate(idParam, "params"),
   authed(cancelMyBooking),
 );
+
+// Checking in by scanning the QR on the gym's screen. The token proves the
+// phone was at the gym in the last couple of minutes; the session says who.
+router.post("/checkin", validate(selfCheckinSchema), authed(selfCheckin));
 
 export default router;

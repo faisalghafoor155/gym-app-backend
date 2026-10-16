@@ -9,6 +9,7 @@ import { authed } from "../types.js";
 import { idParam, checkinSchema } from "../schemas.js";
 import {
   checkin,
+  getGymQr,
   getToday,
   getMemberHistory,
 } from "../controllers/attendanceController.js";
@@ -23,6 +24,9 @@ router.post(
   validate(checkinSchema),
   authed(checkin),
 );
+// The rotating QR members scan with their phones. Same permission as checking
+// somebody in at the desk: the screen showing it is a way of doing exactly that.
+router.get("/gym-qr", requirePermission("canCheckIn"), authed(getGymQr));
 router.get("/today", authed(getToday));
 router.get(
   "/member/:id",

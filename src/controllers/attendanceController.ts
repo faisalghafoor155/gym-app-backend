@@ -4,7 +4,10 @@ import prisma from '../db.js';
 import { currentMembershipWhere, toView, withPlan } from '../services/membership.js';
 import { getPhotoUrl } from '../services/s3.js';
 import type { AuthedRequest } from '../types.js';
-import type { CheckinBody, IdParam } from '../schemas.js';
+import type { CheckinBody, IdParam, SelfCheckinBody } from '../schemas.js';
+import {
+  GYM_CHECKIN_ROTATE_SECONDS, signGymCheckinToken, verifyGymCheckinToken,
+} from '../services/gymCheckin.js';
 
 // `memberNo` travels with the rest because the desk reads it out to confirm
 // who is standing there — a name alone is ambiguous in a gym with two Ahmeds.
@@ -94,80 +97,142 @@ export const checkin = async (
   req: AuthedRequest<Record<string, string>, unknown, CheckinBody>,
   res: Response,
 ): Promise<void> => {
-  const { memberId } = req.body;
   try {
-    const member = await prisma.member.findFirst({
-      where: { id: memberId, gymId: req.gymId },
-      select: {
-        id: true,
-        memberships: {
-          where: currentMembershipWhere,
-          orderBy: { createdAt: 'desc' },
-          take: 1,
-          include: {
-            ...withPlan,
-            // Settled money only; a row still marked due is the debt itself.
-            payments: { where: { status: 'paid' }, select: { amount: true } },
-          },
-        },
-      },
-    });
-    if (!member) {
-      res.status(404).json({ error: 'Member not found' });
-      return;
-    }
-
-    const now = new Date();
-    const { start, end } = dayBounds(now);
-    const current = member.memberships[0] ?? null;
-    // What the desk needs to know before waving somebody through, and the same
-    // shape the members list already speaks.
-    const membership = current ? toView(current, now) : null;
-    const fee = feeSummary(membership, current?.payments ?? []);
-
-    const existing = await prisma.attendance.findFirst({
-      where: { memberId, gymId: req.gymId, checkedInAt: { gte: start, lte: end } },
-      include: memberSummary,
-    });
-    if (existing) {
-      // 200 rather than 201: nothing was created. `alreadyCheckedIn` is what
-      // lets the page say so instead of claiming a fresh arrival.
-      res.json({ ...(await signMember(existing)), membership, fee, alreadyCheckedIn: true });
-      return;
-    }
-
-    try {
-      const record = await prisma.attendance.create({
-        data: { memberId, gymId: req.gymId },
-        include: memberSummary,
-      });
-      res.status(201).json({
-        ...(await signMember(record)),
-        membership,
-        fee,
-        alreadyCheckedIn: false,
-      });
-    } catch (err) {
-      // The other half of the race the constraint exists for: both requests
-      // passed the check above, and this one lost the insert. The member is
-      // checked in either way, which is what the caller asked for — so answer
-      // as though this request had been the one to find the existing row,
-      // rather than reporting a failure for something that succeeded.
-      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-        const winner = await prisma.attendance.findFirst({
-          where: { memberId, gymId: req.gymId, checkedInAt: { gte: start, lte: end } },
-          include: memberSummary,
-        });
-        if (winner) {
-          res.json({ ...(await signMember(winner)), membership, fee, alreadyCheckedIn: true });
-          return;
-        }
-      }
-      throw err;
-    }
+    await recordCheckin(req.gymId, req.body.memberId, res);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * A member checking themselves in by scanning the gym's QR with their phone.
+ *
+ * The QR token proves the phone was pointed at this gym's screen in the last
+ * couple of minutes; the session proves who is holding the phone. Both are
+ * needed — the token alone names nobody, and a session alone would let anyone
+ * check in from home.
+ *
+ * Everything after that is the desk's own check-in, so the rules match: one
+ * row a day, an expired membership let through with the details attached.
+ */
+export const selfCheckin = async (
+  req: AuthedRequest<Record<string, string>, unknown, SelfCheckinBody>,
+  res: Response,
+): Promise<void> => {
+  const gymId = verifyGymCheckinToken(req.body.token);
+  if (!gymId) {
+    res.status(400).json({
+      error: 'This QR code has expired. Scan the code on the gym screen again.',
+      reason: 'expired',
+    });
+    return;
+  }
+  if (gymId !== req.gymId) {
+    res.status(403).json({ error: 'This QR code belongs to a different gym.', reason: 'wrong_gym' });
+    return;
+  }
+  if (!req.memberId) {
+    res.status(404).json({
+      error: 'This account is not linked to a member, so it cannot check in. Sign in with a member account.',
+      reason: 'not_member',
+    });
+    return;
+  }
+  try {
+    await recordCheckin(req.gymId, req.memberId, res);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * A fresh token for the gym QR on the desk screen.
+ *
+ * `appUrl` is what the server was told its public address is. The desktop app
+ * sets it to the PC's Wi-Fi address, which is the one a phone can actually
+ * open — the desk itself is often looking at `localhost`, which on a phone
+ * means the phone.
+ */
+export const getGymQr = (req: AuthedRequest, res: Response): void => {
+  res.json({
+    token: signGymCheckinToken(req.gymId),
+    rotateSeconds: GYM_CHECKIN_ROTATE_SECONDS,
+    appUrl: process.env.APP_URL?.replace(/\/+$/, '') || null,
+  });
+};
+
+/** The check-in itself, shared by the desk and the member's own phone. */
+const recordCheckin = async (gymId: string, memberId: string, res: Response): Promise<void> => {
+  const member = await prisma.member.findFirst({
+    where: { id: memberId, gymId },
+    select: {
+      id: true,
+      memberships: {
+        where: currentMembershipWhere,
+        orderBy: { createdAt: 'desc' },
+        take: 1,
+        include: {
+          ...withPlan,
+          // Settled money only; a row still marked due is the debt itself.
+          payments: { where: { status: 'paid' }, select: { amount: true } },
+        },
+      },
+    },
+  });
+  if (!member) {
+    res.status(404).json({ error: 'Member not found' });
+    return;
+  }
+
+  const now = new Date();
+  const { start, end } = dayBounds(now);
+  const current = member.memberships[0] ?? null;
+  // What the desk needs to know before waving somebody through, and the same
+  // shape the members list already speaks.
+  const membership = current ? toView(current, now) : null;
+  const fee = feeSummary(membership, current?.payments ?? []);
+
+  const existing = await prisma.attendance.findFirst({
+    where: { memberId, gymId, checkedInAt: { gte: start, lte: end } },
+    include: memberSummary,
+  });
+  if (existing) {
+    // 200 rather than 201: nothing was created. `alreadyCheckedIn` is what
+    // lets the page say so instead of claiming a fresh arrival.
+    res.json({ ...(await signMember(existing)), membership, fee, alreadyCheckedIn: true });
+    return;
+  }
+
+  try {
+    const record = await prisma.attendance.create({
+      data: { memberId, gymId: gymId },
+      include: memberSummary,
+    });
+    res.status(201).json({
+      ...(await signMember(record)),
+      membership,
+      fee,
+      alreadyCheckedIn: false,
+    });
+  } catch (err) {
+    // The other half of the race the constraint exists for: both requests
+    // passed the check above, and this one lost the insert. The member is
+    // checked in either way, which is what the caller asked for — so answer
+    // as though this request had been the one to find the existing row,
+    // rather than reporting a failure for something that succeeded.
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+      const winner = await prisma.attendance.findFirst({
+        where: { memberId, gymId, checkedInAt: { gte: start, lte: end } },
+        include: memberSummary,
+      });
+      if (winner) {
+        res.json({ ...(await signMember(winner)), membership, fee, alreadyCheckedIn: true });
+        return;
+      }
+    }
+    throw err;
   }
 };
 
