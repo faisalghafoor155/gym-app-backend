@@ -79,7 +79,7 @@ export const getStatus = async (
   try {
     const configured = device.isConfigured();
     const plan = await planFor(req.gymId);
-    const licensed = planHasFeature(plan, "biometrics") || configured;
+    const licensed = planHasFeature(plan, "biometrics");
     res.json({
       configured,
       /**
@@ -347,12 +347,10 @@ export const identify = async (
   try {
     let matchedId = externalId;
     if (!matchedId && !template) {
+      // A reader that matches internally can be asked directly; anything else
+      // means the request is simply missing what it needs.
       const device = activeDevice();
-      if (!device.isConfigured()) {
-        deviceUnavailable(res);
-        return;
-      }
-      if (device.matchesLocally) {
+      if (device.isConfigured() && device.matchesLocally) {
         const idResult = await device.identify();
         if (!idResult.ok) {
           res.status(404).json({ matched: false, reason: idResult.reason });

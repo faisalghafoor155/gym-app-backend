@@ -7,21 +7,23 @@ import type {
 } from './types.js';
 
 /**
- * Built-in Biometric Fingerprint Scanner Adapter.
+ * A pretend reader for demos and development. NOT a real scanner.
  *
- * Provides out-of-the-box fingerprint capture, enrollment, and attendance matching.
- * Seamlessly stores and encrypts templates into the database using AES-256-GCM.
+ * It reads no finger: `capture` returns random bytes and `identify` simply
+ * answers with the most recently enrolled member. Left on in a real gym it
+ * would check in whoever was enrolled last for every finger placed, so it is
+ * off unless `FINGERPRINT_SIMULATOR=true` is set explicitly.
  */
 const enrolledMembers = new Set<string>();
 let activeMemberId: string | null = null;
 
 export const virtualScanner: FingerprintDevice = {
   id: 'biometric-scanner',
-  label: 'Biometric Fingerprint Scanner',
+  label: 'Fingerprint Simulator (demo)',
   format: 'zkteco-v10',
   matchesLocally: true,
 
-  isConfigured: () => true,
+  isConfigured: () => process.env['FINGERPRINT_SIMULATOR'] === 'true',
   isOnline: () => Promise.resolve(true),
 
   capture: async (): Promise<CaptureResult> => {

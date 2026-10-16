@@ -5,10 +5,12 @@ import type {
 } from './types.js';
 
 /**
- * ZKTeco Standalone Network Biometric Reader.
+ * ZKTeco Standalone Network Biometric Reader — placeholder, not implemented.
  *
- * Configured when ZKTECO_HOST is provided in environment.
- * Matches locally over internal template store.
+ * Nothing here talks to a reader yet, so it never reports itself configured:
+ * an earlier version did whenever ZKTECO_HOST was set, and then stored a
+ * blank template for every member. Implement `capture`/`identify` against
+ * the device's protocol, then make `isConfigured` check ZKTECO_HOST again.
  */
 export const zkteco: FingerprintDevice = {
   id: 'zkteco',
@@ -16,20 +18,11 @@ export const zkteco: FingerprintDevice = {
   format: 'zkteco-v10',
   matchesLocally: true,
 
-  isConfigured: () => Boolean(process.env['ZKTECO_HOST']),
+  isConfigured: () => false,
 
-  isOnline: async () => Boolean(process.env['ZKTECO_HOST']),
+  isOnline: async () => false,
 
-  capture: async (): Promise<CaptureResult> => {
-    return {
-      ok: true,
-      template: {
-        data: Buffer.alloc(512),
-        format: 'zkteco-v10',
-      },
-      quality: 95,
-    };
-  },
+  capture: async (): Promise<CaptureResult> => ({ ok: false, reason: 'device_offline' }),
 
   identify: async (): Promise<IdentifyResult> => {
     return { ok: false, reason: 'no_match' };
