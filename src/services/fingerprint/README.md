@@ -50,6 +50,40 @@ the first configured entry.
 `tests/services/fingerprint.test.ts` exercises both shapes against fakes. Point
 those tests at a new adapter to check it before the hardware is on site.
 
+## ZKTeco K40/K50 (what is wired up)
+
+`zkteco.ts` talks to the reader over TCP (port 4370) with `zkteco-js`.
+
+**Turn it on:** set `ZKTECO_HOST` (the machine's IP, from Menu > Comm. >
+Ethernet) and optionally `ZKTECO_PORT`. On the desktop app put `zktecoHost` /
+`zktecoPort` in `gympro-config.json` beside the .exe. The machine's Comm Key
+must be 0, and the PC must be on the same network as the machine.
+
+**How it behaves:**
+
+- *Enrolment is on the machine.* Add Member > "Add fingerprint" (or the roster's
+  fingerprint button) starts enrolment for that member on the device; the
+  member places the same finger three times at the machine, whose screen says
+  whether each was right, and the desk presses Done. The member is stored on the
+  machine under the number in their member number (`MEM-00012` is user `12`).
+- *Check-in is an event.* `identify` waits for the machine to announce the next
+  verified finger and returns `memberNo:MEM-000NN`, which the controller
+  resolves within the gym.
+- *Removal and retention* delete the user from the machine as well as the row.
+
+**Limits you should know about:**
+
+- The library cannot download templates, so the database row is a marker, not a
+  backup. A replacement machine means re-enrolling members.
+- "Done" is the desk's word: the protocol does not say whether the finger was
+  actually taken, only that the member exists on the machine.
+- Retention runs wherever the jobs run. On the online setup that is the website,
+  which cannot reach a machine on the gym's LAN, so a lapsed member's row is
+  deleted but the machine keeps them until they are removed from the roster.
+- The enrolment command (`CMD_STARTENROLL`) is written from the protocol notes,
+  not tested against a machine. Try it once with the real K50 before relying on
+  it.
+
 ## Things worth knowing before you start
 
 **Templates are not portable.** A ZKTeco template means nothing to a Suprema

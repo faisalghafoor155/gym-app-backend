@@ -1,4 +1,5 @@
 import prisma from '../db.js';
+import { activeDevice } from '../services/fingerprint/index.js';
 import { LAPSED_AFTER_DAYS, addDays } from '../services/membership.js';
 
 /**
@@ -273,6 +274,15 @@ export const runFingerprintRetention = async (
     }
 
     run.deleted++;
+    // A reader that keeps its own store would go on letting the member in after
+    // their row is gone. Best effort: the row is the decision, and a reader
+    // that is off tonight must not stop the rest of the run.
+    const device = activeDevice();
+    if (device.isConfigured() && device.matchesLocally) {
+      await device.forget(row.memberId).catch((err: unknown) => {
+        console.error('[jobs] fingerprint retention: device forget failed', row.memberId, err);
+      });
+    }
     await logDeletion(row, afterDays);
   }
 

@@ -667,6 +667,18 @@ export const enrollFingerprintSchema = z.object({
 });
 
 /**
+ * Starting, or confirming, enrolment on a reader that takes the finger itself.
+ * No template: the machine keeps it.
+ */
+export const deviceEnrolSchema = z.object({
+  memberId: uuid,
+  /** Free text for the desk, as on `enrollFingerprintSchema`. */
+  finger: z.string().trim().max(30, "is too long").optional(),
+  /** Which finger slot on the device, 0-9. Defaults to the right index. */
+  fingerIndex: z.number().int().min(0).max(9).optional(),
+});
+
+/**
  * A check-in attempt from the reader.
  *
  * Both fields are optional and exactly one is expected, which the controller
@@ -1376,6 +1388,7 @@ export type CheckinBody = z.infer<typeof checkinSchema>;
 export type SelfCheckinBody = z.infer<typeof selfCheckinSchema>;
 export type EnrollFingerprintBody = z.infer<typeof enrollFingerprintSchema>;
 export type IdentifyFingerprintBody = z.infer<typeof identifyFingerprintSchema>;
+export type DeviceEnrolBody = z.infer<typeof deviceEnrolSchema>;
 export type PaymentChannel = (typeof PAYMENT_CHANNELS)[number];
 export type CreatePaymentBody = z.infer<typeof createPaymentSchema>;
 export type UpdatePaymentBody = z.infer<typeof updatePaymentSchema>;

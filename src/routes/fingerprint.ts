@@ -11,11 +11,14 @@ import {
   idParam,
   enrollFingerprintSchema,
   identifyFingerprintSchema,
+  deviceEnrolSchema,
 } from "../schemas.js";
 import {
   getStatus,
   capture,
   enroll,
+  startDeviceEnrol,
+  confirmDeviceEnrol,
   remove,
   identify,
 } from "../controllers/fingerprintController.js";
@@ -69,6 +72,21 @@ router.post(
   requireFeature("biometrics"),
   validate(enrollFingerprintSchema),
   authed(enroll),
+);
+/** Enrolment on a reader that takes the finger itself — same gate as `enroll`. */
+router.post(
+  "/device-enrol/start",
+  requirePermission("canManageMembers"),
+  requireFeature("biometrics"),
+  validate(deviceEnrolSchema),
+  authed(startDeviceEnrol),
+);
+router.post(
+  "/device-enrol/confirm",
+  requirePermission("canManageMembers"),
+  requireFeature("biometrics"),
+  validate(deviceEnrolSchema),
+  authed(confirmDeviceEnrol),
 );
 /**
  * Not gated, unlike enrolment. A gym that downgrades still holds the templates

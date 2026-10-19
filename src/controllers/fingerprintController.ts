@@ -14,6 +14,7 @@ import { getPhotoUrl } from "../services/s3.js";
 import type { Template } from "../services/fingerprint/index.js";
 import type { AuthedRequest } from "../types.js";
 import type {
+  DeviceEnrolBody,
   EnrollFingerprintBody,
   IdentifyFingerprintBody,
   IdParam,
@@ -98,6 +99,9 @@ export const getStatus = async (
       label: device.label,
       format: device.format,
       matchesLocally: device.matchesLocally,
+      /** The finger is taken on the machine itself, so the dialog walks the
+       *  desk through that instead of asking for three captures. */
+      enrolOnDevice: device.enrolOnDevice ?? false,
       // Reported whatever the plan says. A gym that downgrades still holds the
       // templates it took, and the page has to be able to say how many are
       // there so they can be deleted.
@@ -276,6 +280,145 @@ export const enroll = async (
   }
 };
 
+/**
+ * Start enrolment on a reader that takes the finger itself.
+ *
+ * Puts the member on the machine and switches it to enrolment, then returns —
+ * the member places the finger three times at the machine, whose own screen
+ * says whether each one was right. `confirmDeviceEnrol` is what the desk calls
+ * once the machine is done.
+ */
+export const startDeviceEnrol = async (
+  req: AuthedRequest<Record<string, string>, unknown, DeviceEnrolBody>,
+  res: Response,
+): Promise<void> => {
+  const { memberId } = req.body;
+  try {
+    const device = activeDevice();
+    if (!device.isConfigured() || !device.beginDeviceEnrol) {
+      deviceUnavailable(res);
+      return;
+    }
+    const member = await prisma.member.findFirst({
+      where: { id: memberId, gymId: req.gymId },
+      select: { id: true, name: true },
+    });
+    if (!member) {
+      res.status(404).json({ error: "Member not found" });
+      return;
+    }
+
+    try {
+      const { deviceUserId } = await device.beginDeviceEnrol(memberId, {
+        name: member.name,
+        finger: req.body.fingerIndex,
+      });
+      res.status(202).json({ deviceUserId });
+    } catch (err) {
+      console.error("[fingerprint] device enrol start failed", err);
+      res.status(502).json({
+        error: `${device.label} did not start enrolment. Check it is on and connected, then try again.`,
+      });
+    }
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+/**
+ * Record that the machine has taken the member's finger.
+ *
+ * Confirms the member is on the machine, then stores a marker row so the roster
+ * shows them as enrolled and retention and removal have something to act on.
+ * The row holds no fingerprint: these readers do not give templates back, so
+ * the machine is the only copy.
+ *
+ * What this cannot check is whether the finger itself was taken — the protocol
+ * does not say. The desk presses confirm after the machine's screen does.
+ */
+export const confirmDeviceEnrol = async (
+  req: AuthedRequest<Record<string, string>, unknown, DeviceEnrolBody>,
+  res: Response,
+): Promise<void> => {
+  const { memberId, finger } = req.body;
+  try {
+    const device = activeDevice();
+    if (!device.isConfigured() || !device.hasDeviceEnrolment) {
+      deviceUnavailable(res);
+      return;
+    }
+    const member = await prisma.member.findFirst({
+      where: { id: memberId, gymId: req.gymId },
+      select: { id: true, name: true },
+    });
+    if (!member) {
+      res.status(404).json({ error: "Member not found" });
+      return;
+    }
+
+    let onDevice: boolean;
+    try {
+      onDevice = await device.hasDeviceEnrolment(memberId);
+    } catch (err) {
+      console.error("[fingerprint] device lookup failed", err);
+      deviceUnavailable(res);
+      return;
+    }
+    if (!onDevice) {
+      res.status(409).json({
+        error: `${device.label} does not have this member yet. Start the enrolment again.`,
+      });
+      return;
+    }
+
+    const existing = await prisma.fingerprintTemplate.findUnique({
+      where: { memberId },
+      select: { id: true },
+    });
+    const sealed = encryptTemplate(Buffer.from("on-device"), memberId);
+    const record = await prisma.fingerprintTemplate.upsert({
+      where: { memberId },
+      create: {
+        memberId,
+        gymId: req.gymId,
+        template: sealed,
+        format: device.format,
+        finger: finger ?? null,
+        enrolledBy: req.actorName,
+      },
+      update: {
+        template: sealed,
+        format: device.format,
+        finger: finger ?? null,
+        enrolledBy: req.actorName,
+        enrolledAt: new Date(),
+      },
+      select: { id: true, enrolledAt: true, finger: true, format: true },
+    });
+
+    await audit(req, {
+      action: existing ? "fingerprint.reenroll" : "fingerprint.enroll",
+      entity: "Member",
+      entityId: memberId,
+      entityLabel: member.name,
+      after: { finger: finger ?? null, format: device.format },
+    });
+
+    res.status(existing ? 200 : 201).json(record);
+  } catch (err) {
+    if (err instanceof BiometricCryptoError) {
+      console.error("[fingerprint] cannot encrypt marker", err.message);
+      res.status(500).json({
+        error: "Fingerprints cannot be stored right now. BIOMETRIC_KEY is not usable.",
+      });
+      return;
+    }
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
 /** Remove a member's enrolment, from the database and the reader alike. */
 export const remove = async (
   req: AuthedRequest<IdParam>,
@@ -367,8 +510,14 @@ export const identify = async (
 
     // --- the device already knows who it is ------------------------------
     if (matchedId) {
+      // A reader whose ids are numbers on its own screen names the member by
+      // member number; resolving it here, inside this gym, keeps the adapter
+      // from having to know which tenant it is serving.
+      const byNumber = matchedId.startsWith("memberNo:")
+        ? { memberNo: matchedId.slice("memberNo:".length) }
+        : { id: matchedId };
       const member = await prisma.member.findFirst({
-        where: { id: matchedId, gymId: req.gymId },
+        where: { ...byNumber, gymId: req.gymId },
         select: {
           id: true,
           name: true,

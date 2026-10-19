@@ -134,4 +134,27 @@ export interface FingerprintDevice {
   /** Remove an id from the device's store. Must not throw if it is absent —
    *  deleting something that is already gone is a success, not a failure. */
   forget(externalId: string): Promise<void>;
+
+  /**
+   * True when the finger is taken on the device itself — its own screen walks
+   * the member through placing the same finger several times and says whether
+   * each one was right. Such a device never hands a template back, so
+   * `capture` cannot be used to enrol on it; `beginDeviceEnrol` and
+   * `hasDeviceEnrolment` are used instead.
+   */
+  readonly enrolOnDevice?: boolean;
+
+  /**
+   * Register the member on the device and put it in enrolment mode, so the
+   * next fingers placed on it are taken for this member. Returns once the
+   * device has accepted the request, not once the finger is taken — the desk
+   * watches the device for that.
+   */
+  beginDeviceEnrol?(
+    externalId: string,
+    opts: { name: string; finger?: number },
+  ): Promise<{ deviceUserId: string }>;
+
+  /** Whether the device now holds this member, i.e. enrolment was started. */
+  hasDeviceEnrolment?(externalId: string): Promise<boolean>;
 }
