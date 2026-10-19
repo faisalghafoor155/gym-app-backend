@@ -1250,6 +1250,9 @@ export const updateGymSettingsSchema = z.object({
   /** What a trainer assignment costs when the trainer sets no price of their
    *  own. Zero is valid and means the gym charges nothing for it. */
   defaultPtFee: money,
+  /** The fixed fee prefilled for every new member. Zero means none. Optional so
+   *  a client that predates the setting can still save the rest. */
+  joiningFee: money.optional(),
   /**
    * Where members are told to send money. Free text, because a wallet is a
    * phone number and a bank is a name plus an IBAN. Blank clears the channel's

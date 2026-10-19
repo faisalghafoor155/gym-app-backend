@@ -21,6 +21,7 @@ const gymSettingsFields = {
   address: true,
   logo: true,
   defaultPtFee: true,
+  joiningFee: true,
   easypaisaAccount: true,
   jazzcashAccount: true,
   bankAccount: true,
@@ -34,6 +35,7 @@ const AUDITED_SETTINGS = [
   'address',
   'logo',
   'defaultPtFee',
+  'joiningFee',
   'easypaisaAccount',
   'jazzcashAccount',
   'bankAccount',
@@ -45,7 +47,11 @@ export const get = async (req: AuthedRequest, res: Response): Promise<void> => {
       where: { id: req.gymId },
       select: gymSettingsFields,
     });
-    res.json({ ...gym, defaultPtFee: toNumber(gym.defaultPtFee) });
+    res.json({
+      ...gym,
+      defaultPtFee: toNumber(gym.defaultPtFee),
+      joiningFee: toNumber(gym.joiningFee),
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
@@ -63,6 +69,7 @@ export const update = async (
     address,
     logo,
     defaultPtFee,
+    joiningFee,
     easypaisaAccount,
     jazzcashAccount,
     bankAccount,
@@ -91,6 +98,7 @@ export const update = async (
         ...(logo !== undefined && { logo }),
         // Required by the schema, so always present — unlike the rest.
         defaultPtFee,
+        ...(joiningFee !== undefined && { joiningFee }),
         ...(easypaisaAccount !== undefined && { easypaisaAccount }),
         ...(jazzcashAccount !== undefined && { jazzcashAccount }),
         ...(bankAccount !== undefined && { bankAccount }),
@@ -114,7 +122,11 @@ export const update = async (
       });
     }
 
-    res.json({ ...after, defaultPtFee: toNumber(after.defaultPtFee) });
+    res.json({
+      ...after,
+      defaultPtFee: toNumber(after.defaultPtFee),
+      joiningFee: toNumber(after.joiningFee),
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });

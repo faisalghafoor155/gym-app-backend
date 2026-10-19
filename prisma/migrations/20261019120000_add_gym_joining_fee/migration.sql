@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "Gym" ADD COLUMN     "joiningFee" DECIMAL(10,2) NOT NULL DEFAULT 0.00;
