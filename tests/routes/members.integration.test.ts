@@ -3,6 +3,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 
 import prisma from "../../src/db.js";
+import { LAPSED_AFTER_DAYS } from "../../src/services/membership.js";
 import {
   api,
   resetDb,
@@ -214,12 +215,12 @@ describe("members list — derived status filters", () => {
     expect(names(expired.body)).toEqual([]);
   });
 
-  it("needs more than sixty days to lapse, not exactly sixty", async () => {
+  it("needs more than LAPSED_AFTER_DAYS to lapse, not exactly that many", async () => {
     const owner = await makeGym();
-    const edge = await addMember(owner.gymId, { name: "Sixty" });
-    // isLapsed is `< -LAPSED_AFTER_DAYS`, so exactly sixty days out is expired
+    const edge = await addMember(owner.gymId, { name: "Boundary" });
+    // isLapsed is `< -LAPSED_AFTER_DAYS`, so exactly that many days out is expired
     // and still on the books.
-    await addMembership(owner.gymId, edge.id, { expiresInDays: -60 });
+    await addMembership(owner.gymId, edge.id, { expiresInDays: -LAPSED_AFTER_DAYS });
 
     const expired = await api()
       .get("/api/members?status=expired")
@@ -228,7 +229,7 @@ describe("members list — derived status filters", () => {
       .get("/api/members?status=lapsed")
       .set("Cookie", owner.cookie);
 
-    expect(names(expired.body)).toEqual(["Sixty"]);
+    expect(names(expired.body)).toEqual(["Boundary"]);
     expect(names(lapsed.body)).toEqual([]);
   });
 
