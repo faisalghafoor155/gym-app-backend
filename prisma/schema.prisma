@@ -254,14 +254,24 @@ model User {
 
   /// Two-Factor Authentication (TOTP)
   /// Secret key for generating TOTP codes. Null means 2FA is not enabled.
-  twoFactorSecret       String?
+  twoFactorSecret          String?
   /// Whether 2FA is verified and active.
-  twoFactorEnabled      Boolean   @default(false)
+  twoFactorEnabled         Boolean   @default(false)
   /// Backup codes for 2FA recovery (JSON array of hashed codes).
-  twoFactorBackupCodes  String?
+  twoFactorBackupCodes     String?
   /// Temporary secret while user is setting up 2FA (not yet confirmed).
-  twoFactorTempSecret   String?
-  twoFactorTempSecretAt DateTime?
+  twoFactorTempSecret      String?
+  twoFactorTempSecretAt    DateTime?
+  /// Hashed backup codes issued at setup, held until the TOTP code confirms
+  /// them. Generated and stored by the server so the client cannot choose them.
+  twoFactorTempBackupCodes String?
+  /// Wrong second-factor attempts since the last success or lockout.
+  twoFactorFailedAttempts  Int       @default(0)
+  /// While in the future, second-factor attempts are refused outright.
+  twoFactorLockedUntil     DateTime?
+  /// The last TOTP time-step that was accepted. A code from this step or an
+  /// earlier one is never accepted again.
+  twoFactorLastStep        Int?
 
   /// Staff permission level (only applicable when role = 'staff'). Null on
   /// purpose: a new staff account gets no extra grants until the owner picks

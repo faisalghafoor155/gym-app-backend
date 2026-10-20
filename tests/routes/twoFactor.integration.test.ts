@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import bcrypt from 'bcryptjs';
 import speakeasy from 'speakeasy';
+import request from 'supertest';
 
 import prisma from '../../src/db.js';
+import app from '../../src/index.js';
 import { api, cookieFor, makeGym, resetDb } from '../helpers.js';
 
 beforeEach(resetDb);
@@ -505,5 +507,96 @@ describe('the stored TOTP secret', () => {
       .send({ token: challenge.body.twoFactorToken, code: totp(legacySecret) });
 
     expect(res.status).toBe(200);
+  });
+});
+
+describe('hardening the second factor', () => {
+  const verify = (token: string, code: string) =>
+    api().post('/api/auth/two-factor/verify-login').send({ token, code });
+
+  it('accepts a backup code only once when two requests race', async () => {
+    const { userId, email } = await makeGym({ password: 'correct-horse-battery' });
+    await enableTwoFactor(userId);
+    const a = await loginChallenge(email);
+    const b = await loginChallenge(email);
+
+    const [ra, rb] = await Promise.all([
+      verify(a.body.twoFactorToken, BACKUP_CODE),
+      verify(b.body.twoFactorToken, BACKUP_CODE),
+    ]);
+
+    expect([ra.status, rb.status].sort()).toEqual([200, 401]);
+  });
+
+  it('refuses a TOTP code that was already used', async () => {
+    const { userId, email } = await makeGym({ password: 'correct-horse-battery' });
+    const secret = await enableTwoFactor(userId);
+    const code = totp(secret);
+
+    const first = await loginChallenge(email);
+    expect((await verify(first.body.twoFactorToken, code)).status).toBe(200);
+
+    const second = await loginChallenge(email);
+    const replay = await verify(second.body.twoFactorToken, code);
+    expect(replay.status).toBe(401);
+    expect(sessionCookie(replay)).toBeUndefined();
+  });
+
+  it('locks the account after five wrong codes, even for the right one', async () => {
+    const { userId, email } = await makeGym({ password: 'correct-horse-battery' });
+    const secret = await enableTwoFactor(userId);
+    const { body } = await loginChallenge(email);
+
+    for (let i = 0; i < 5; i++) {
+      expect((await verify(body.twoFactorToken, '000000')).status).toBe(401);
+    }
+
+    const locked = await verify(body.twoFactorToken, totp(secret));
+    expect(locked.status).toBe(429);
+    expect(sessionCookie(locked)).toBeUndefined();
+  });
+
+  it('lets the account back in once the lock has passed', async () => {
+    const { userId, email } = await makeGym({ password: 'correct-horse-battery' });
+    const secret = await enableTwoFactor(userId);
+    const { body } = await loginChallenge(email);
+    await prisma.user.update({
+      where: { id: userId },
+      data: { twoFactorLockedUntil: new Date(Date.now() - 1000), twoFactorFailedAttempts: 3 },
+    });
+
+    const res = await verify(body.twoFactorToken, totp(secret));
+
+    expect(res.status).toBe(200);
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    expect(user?.twoFactorFailedAttempts).toBe(0);
+    expect(user?.twoFactorLockedUntil).toBeNull();
+  });
+
+  it('ignores backup codes the client sends at setup', async () => {
+    const account = await makeGym();
+    const setup = await api().get('/api/auth/two-factor/setup').set('Cookie', account.cookie);
+
+    const confirm = await api()
+      .post('/api/auth/two-factor/verify-setup')
+      .set('Cookie', account.cookie)
+      .send({ code: totp(setup.body.secret), backupCodes: ['0000-0000'] });
+    expect(confirm.status).toBe(200);
+
+    const user = await prisma.user.findUnique({ where: { id: account.userId } });
+    const stored: string[] = JSON.parse(user!.twoFactorBackupCodes!);
+    expect(stored).toHaveLength(8);
+    expect(await bcrypt.compare('0000-0000', stored[0]!)).toBe(false);
+    expect(await bcrypt.compare(setup.body.backupCodes[0], stored[0]!)).toBe(true);
+  });
+
+  it('throttles password guesses against the disable endpoint', async () => {
+    // No skip header: this is the real limiter. Failed attempts count, and a
+    // 401 for no session is a failed attempt.
+    let last = 0;
+    for (let i = 0; i < 12; i++) {
+      last = (await request(app).delete('/api/auth/two-factor').send({ password: 'x' })).status;
+    }
+    expect(last).toBe(429);
   });
 });

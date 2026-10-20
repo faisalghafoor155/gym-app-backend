@@ -19,7 +19,8 @@ import {
 } from '../services/emailVerification.js';
 import {
   signTwoFactorChallenge, verifyTwoFactorChallenge,
-  verifyTOTPCode, consumeBackupCode, readTwoFactorSecret,
+  matchTotpStep, consumeTotpStep, consumeBackupCode, readTwoFactorSecret,
+  isTwoFactorLocked, recordFailedTwoFactorAttempt, clearTwoFactorAttempts,
 } from '../services/twoFactor.js';
 
 /** A reset link is short-lived; an old inbox should not be a way in. */
@@ -321,13 +322,29 @@ export const verifyTwoFactorLogin = async (
       return;
     }
 
-    const passed = code.includes('-')
-      ? await consumeBackupCode(user.id, code)
-      : verifyTOTPCode(readTwoFactorSecret(user.twoFactorSecret, user.id), code);
+    // Locked accounts are refused before the code is even looked at, so a
+    // lock cannot be probed: the right code gets the same answer as a wrong one.
+    if (isTwoFactorLocked(user.twoFactorLockedUntil)) {
+      res.status(429).json({
+        error: 'Too many wrong codes. Try again in 15 minutes.',
+      });
+      return;
+    }
+
+    let passed: boolean;
+    if (code.includes('-')) {
+      passed = await consumeBackupCode(user.id, code);
+    } else {
+      const step = matchTotpStep(readTwoFactorSecret(user.twoFactorSecret, user.id), code);
+      // A code that matches but whose step was already spent is a replay.
+      passed = step !== null && (await consumeTotpStep(user.id, step));
+    }
     if (!passed) {
+      await recordFailedTwoFactorAttempt(user.id);
       res.status(401).json({ error: 'Invalid code' });
       return;
     }
+    await clearTwoFactorAttempts(user.id);
 
     // Checked again rather than trusted from the first step: the challenge is
     // valid for ten minutes, which is long enough for a gym to be suspended in

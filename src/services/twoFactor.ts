@@ -70,12 +70,92 @@ export const generateTwoFactorSecret = async (
 /**
  * Verify a TOTP code
  */
-export const verifyTOTPCode = (secret: string, token: string): boolean => {
-  return speakeasy.totp.verify({
+export const verifyTOTPCode = (secret: string, token: string): boolean =>
+  matchTotpStep(secret, token) !== null;
+
+/** Length of one TOTP time-step, in seconds. */
+const TOTP_STEP_SECONDS = 30;
+
+/**
+ * The time-step a code belongs to, or null if it is not valid right now.
+ *
+ * One step either side is allowed for clock skew (about 90 seconds of
+ * validity in all, down from the 150 a window of two gave). Returning the step
+ * rather than a boolean is what lets a login refuse a code that was already
+ * spent: see `consumeTotpStep`.
+ */
+export const matchTotpStep = (secret: string, token: string): number | null => {
+  const result = speakeasy.totp.verifyDelta({
     secret,
     encoding: "base32",
     token,
-    window: 2, // Allow 30 seconds before/after for clock skew
+    window: 1,
+    step: TOTP_STEP_SECONDS,
+  });
+  if (!result) return null;
+  return Math.floor(Date.now() / 1000 / TOTP_STEP_SECONDS) + result.delta;
+};
+
+/**
+ * Marks a time-step as spent. Returns false if that step, or a later one, was
+ * already accepted — so a code that has been used once, by the owner or by
+ * someone who watched it being typed, cannot be used again inside its window.
+ *
+ * One conditional UPDATE rather than read-then-write: two simultaneous
+ * requests carrying the same code race on the row, and exactly one of them
+ * sees a count of 1.
+ */
+export const consumeTotpStep = async (
+  userId: string,
+  step: number,
+): Promise<boolean> => {
+  const { count } = await prisma.user.updateMany({
+    where: {
+      id: userId,
+      OR: [{ twoFactorLastStep: null }, { twoFactorLastStep: { lt: step } }],
+    },
+    data: { twoFactorLastStep: step },
+  });
+  return count === 1;
+};
+
+/** Wrong second-factor attempts allowed before the account is locked. */
+export const LOCKOUT_THRESHOLD = 5;
+/** How long the lock lasts. */
+export const LOCKOUT_MS = 15 * 60 * 1000;
+
+export const isTwoFactorLocked = (lockedUntil: Date | null): boolean =>
+  lockedUntil !== null && lockedUntil.getTime() > Date.now();
+
+/**
+ * Counts a wrong second-factor attempt against the account, not the caller's
+ * IP: the IP limiter alone costs an attacker nothing but a new address. At the
+ * threshold the account locks and the counter resets, so the next window
+ * starts clean.
+ */
+export const recordFailedTwoFactorAttempt = async (
+  userId: string,
+): Promise<void> => {
+  const { twoFactorFailedAttempts } = await prisma.user.update({
+    where: { id: userId },
+    data: { twoFactorFailedAttempts: { increment: 1 } },
+    select: { twoFactorFailedAttempts: true },
+  });
+  if (twoFactorFailedAttempts >= LOCKOUT_THRESHOLD) {
+    await prisma.user.update({
+      where: { id: userId },
+      data: {
+        twoFactorFailedAttempts: 0,
+        twoFactorLockedUntil: new Date(Date.now() + LOCKOUT_MS),
+      },
+    });
+  }
+};
+
+export const clearTwoFactorAttempts = async (userId: string): Promise<void> => {
+  await prisma.user.update({
+    where: { id: userId },
+    data: { twoFactorFailedAttempts: 0, twoFactorLockedUntil: null },
   });
 };
 
@@ -102,11 +182,8 @@ export const verifyBackupCode = async (
 export const enableTwoFactor = async (
   userId: string,
   tempSecret: string,
-  backupCodes: string[],
+  hashedBackupCodes: string,
 ): Promise<void> => {
-  // Hash backup codes
-  const hashedCodes = await Promise.all(backupCodes.map(hashBackupCode));
-
   await prisma.user.update({
     where: { id: userId },
     data: {
@@ -116,9 +193,13 @@ export const enableTwoFactor = async (
       // column is exactly the bug this is here to prevent.
       twoFactorSecret: encryptSecret(tempSecret, userId),
       twoFactorEnabled: true,
-      twoFactorBackupCodes: JSON.stringify(hashedCodes),
+      twoFactorBackupCodes: hashedBackupCodes,
       twoFactorTempSecret: null,
       twoFactorTempSecretAt: null,
+      twoFactorTempBackupCodes: null,
+      twoFactorFailedAttempts: 0,
+      twoFactorLockedUntil: null,
+      twoFactorLastStep: null,
     },
   });
 };
@@ -166,6 +247,10 @@ export const disableTwoFactor = async (userId: string): Promise<void> => {
       twoFactorBackupCodes: null,
       twoFactorTempSecret: null,
       twoFactorTempSecretAt: null,
+      twoFactorTempBackupCodes: null,
+      twoFactorFailedAttempts: 0,
+      twoFactorLockedUntil: null,
+      twoFactorLastStep: null,
     },
   });
 };
@@ -176,12 +261,17 @@ export const disableTwoFactor = async (userId: string): Promise<void> => {
 export const saveTempTwoFactorSecret = async (
   userId: string,
   tempSecret: string,
+  backupCodes: string[],
 ): Promise<void> => {
+  // The server keeps the hashes. The client is shown the plaintext once and
+  // sends back only the TOTP code, so it cannot pick which codes get stored.
+  const hashed = await Promise.all(backupCodes.map(hashBackupCode));
   await prisma.user.update({
     where: { id: userId },
     data: {
       twoFactorTempSecret: encryptSecret(tempSecret, userId),
       twoFactorTempSecretAt: new Date(),
+      twoFactorTempBackupCodes: JSON.stringify(hashed),
     },
   });
 };
@@ -216,7 +306,8 @@ export const consumeBackupCode = async (
     return false;
   }
 
-  const hashedCodes: string[] = JSON.parse(user.twoFactorBackupCodes);
+  const stored = user.twoFactorBackupCodes;
+  const hashedCodes: string[] = JSON.parse(stored);
 
   // Find and verify the backup code
   let codeIndex = -1;
@@ -234,14 +325,15 @@ export const consumeBackupCode = async (
   // Remove used code
   hashedCodes.splice(codeIndex, 1);
 
-  await prisma.user.update({
-    where: { id: userId },
-    data: {
-      twoFactorBackupCodes: JSON.stringify(hashedCodes),
-    },
+  // Compare-and-swap on the exact list that was read. Two simultaneous
+  // requests with the same code both pass the bcrypt check above; only the
+  // first finds the column unchanged, and the second matches no row.
+  const { count } = await prisma.user.updateMany({
+    where: { id: userId, twoFactorBackupCodes: stored },
+    data: { twoFactorBackupCodes: JSON.stringify(hashedCodes) },
   });
 
-  return true;
+  return count === 1;
 };
 
 /**

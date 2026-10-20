@@ -50,7 +50,7 @@ router.get("/setup", requireAuth, async (req, res: Response) => {
     );
 
     // Save temporary secret
-    await saveTempTwoFactorSecret(authReq.userId, secret);
+    await saveTempTwoFactorSecret(authReq.userId, secret, backupCodes);
 
     res.json({
       secret,
@@ -67,11 +67,11 @@ router.get("/setup", requireAuth, async (req, res: Response) => {
  * POST /api/auth/two-factor/verify-setup
  * Verify TOTP code and enable 2FA
  */
+// No backup codes in the body: the server hashed and stored the ones it issued
+// at /setup, so the client has no say in which codes end up protecting the
+// account. Older clients that still send the field are ignored, not rejected.
 const verifySetupSchema = z.object({
   code: z.string().regex(/^\d{6}$/, "Code must be 6 digits"),
-  backupCodes: z
-    .array(z.string())
-    .min(1, "At least one backup code is required"),
 });
 
 router.post(
@@ -82,17 +82,21 @@ router.post(
     const authReq = req as AuthedRequest<
       Record<string, string>,
       unknown,
-      { code: string; backupCodes: string[] }
+      { code: string }
     >;
     try {
-      const { code, backupCodes } = authReq.body;
+      const { code } = authReq.body;
 
       const user = await prisma.user.findUnique({
         where: { id: authReq.userId },
-        select: { twoFactorTempSecret: true, twoFactorTempSecretAt: true },
+        select: {
+          twoFactorTempSecret: true,
+          twoFactorTempSecretAt: true,
+          twoFactorTempBackupCodes: true,
+        },
       });
 
-      if (!user?.twoFactorTempSecret) {
+      if (!user?.twoFactorTempSecret || !user.twoFactorTempBackupCodes) {
         res
           .status(400)
           .json({ error: "No 2FA setup in progress. Call /setup first." });
@@ -123,7 +127,11 @@ router.post(
       }
 
       // Enable 2FA
-      await enableTwoFactor(authReq.userId, tempSecret, backupCodes);
+      await enableTwoFactor(
+        authReq.userId,
+        tempSecret,
+        user.twoFactorTempBackupCodes,
+      );
 
       res.json({ success: true, message: "2FA enabled successfully" });
     } catch (error) {

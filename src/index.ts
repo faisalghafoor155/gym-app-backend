@@ -299,6 +299,11 @@ app.use("/api/auth/two-factor/verify-login", authLimiter);
 // guessing it is a set of credentials that bypass the second factor. That is
 // a password-guessing endpoint whatever else it is, so it is throttled as one.
 app.use("/api/auth/two-factor/backup-codes", authLimiter);
+// Turning 2FA off asks for the password, so a stolen session cookie can guess
+// it here. Only DELETE: status and setup are ordinary authenticated reads.
+app.use("/api/auth/two-factor", (req, res, next) =>
+  req.method === "DELETE" ? authLimiter(req, res, next) : next(),
+);
 
 // Starting a checkout writes a row and calls out to a provider. Unthrottled,
 // one member holding the button down fills the intents table; a stranger
