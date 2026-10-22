@@ -105,6 +105,9 @@ export interface MembershipView {
   durationDays: number;
   status: DisplayStatus;
   daysLeft: number;
+  /** A freeze that covers today or is booked for later; null otherwise. An
+   *  old freeze that has run its course is history, not a state. */
+  freeze: { from: Date; until: Date } | null;
 }
 
 type MembershipWithPlan = {
@@ -116,7 +119,26 @@ type MembershipWithPlan = {
   pricePaid: Prisma.Decimal;
   status: MembershipStatus;
   plan: { name: string; durationDays: number };
+  /** Optional so a caller that selected only some columns still type-checks;
+   *  absent reads the same as never frozen. */
+  frozenFrom?: Date | null;
+  frozenUntil?: Date | null;
 };
+
+/**
+ * The freeze to report for a membership, if any.
+ *
+ * `frozenUntil` is the first day back, so a freeze is live while it is still
+ * ahead of now. Booked-but-not-started freezes are reported too: the desk
+ * needs to see "frozen from the 1st" before the 1st arrives.
+ */
+export const activeFreeze = (
+  m: { frozenFrom?: Date | null; frozenUntil?: Date | null },
+  now: Date = new Date(),
+): { from: Date; until: Date } | null =>
+  m.frozenFrom && m.frozenUntil && m.frozenUntil > now
+    ? { from: m.frozenFrom, until: m.frozenUntil }
+    : null;
 
 /**
  * When a renewal's new period should begin.
@@ -144,6 +166,7 @@ export const toView = (m: MembershipWithPlan, now: Date = new Date()): Membershi
   durationDays: m.plan.durationDays,
   status: displayStatus(m, now),
   daysLeft: daysUntil(m.expiryDate, now),
+  freeze: activeFreeze(m, now),
 });
 
 /** What counts as a member's membership right now: the newest one that has
@@ -162,7 +185,7 @@ export const withPlan = {
  * against. Taken once per request so two rows in the same response can never
  * disagree about where "today" starts.
  */
-const startOfDay = (now: Date): Date => {
+export const startOfDay = (now: Date): Date => {
   const d = new Date(now);
   d.setHours(0, 0, 0, 0);
   return d;

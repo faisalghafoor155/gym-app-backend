@@ -1,11 +1,13 @@
 import type { Response } from 'express';
 import prisma from '../db.js';
 import { audit } from '../services/audit.js';
-import { addDays, renewalStart, toView, withPlan } from '../services/membership.js';
+import {
+  activeFreeze, addDays, daysUntil, renewalStart, startOfDay, toView, withPlan,
+} from '../services/membership.js';
 import type { AuthedRequest } from '../types.js';
 import type {
   CreateMembershipBody, RenewMembershipBody, MembershipHistoryQuery,
-  IdParam, MembershipParams,
+  IdParam, MembershipParams, FreezeMembershipBody,
 } from '../schemas.js';
 
 /** Everything this member has ever bought, newest first. */
@@ -166,7 +168,9 @@ export const renew = async (
   res: Response,
 ): Promise<void> => {
   const { id: memberId, membershipId } = req.params;
-  const { planId, amount, method, channel, reference, includeTrainer, trainerId, ptFee } = req.body;
+  const {
+    planId, amount, price, method, channel, reference, includeTrainer, trainerId, ptFee,
+  } = req.body;
   try {
     // Scoped by member and gym as well as id: a valid membership id belonging
     // to somebody else must read as missing, not as forbidden.
@@ -230,8 +234,9 @@ export const renew = async (
           startDate: start,
           expiryDate: expiry,
           // Snapshotted so a later price change cannot rewrite what this
-          // member was actually charged.
-          pricePaid: plan.price,
+          // member was actually charged. A discount agreed at the counter is
+          // the price; whatever of it was not paid today is owed.
+          pricePaid: price ?? plan.price,
         },
         include: withPlan,
       });
@@ -320,7 +325,7 @@ export const renew = async (
         planName: plan.name,
         startDate: start,
         expiryDate: expiry,
-        pricePaid: plan.price,
+        pricePaid: price ?? plan.price,
         paymentId: payment.id,
         amountPaid: amount,
         method,
@@ -430,3 +435,181 @@ export const cancel = async (
   req: AuthedRequest<MembershipParams>,
   res: Response,
 ): Promise<void> => setStatus(req, res, 'cancelled', 'membership.cancel');
+
+/** The membership a freeze route names, scoped to this member and gym. */
+const findForFreeze = (req: AuthedRequest<MembershipParams, unknown, unknown>) =>
+  prisma.membership.findFirst({
+    where: { id: req.params.membershipId, memberId: req.params.id, gymId: req.gymId },
+    include: {
+      ...withPlan,
+      member: { select: { name: true, memberNo: true } },
+    },
+  });
+
+/**
+ * Freezes a membership for a number of days: the member stops coming, and the
+ * expiry moves out by exactly that many days so they lose nothing.
+ *
+ * Unlike suspending, which stops the membership but lets the clock run, this
+ * is the clock stopping. The membership stays `active` throughout — check-in
+ * still works, as it does for an expired membership, and the desk sees "frozen
+ * until" on the member's card and at the counter. Turning somebody away is the
+ * desk's call, not this endpoint's.
+ *
+ * One freeze at a time. Two overlapping windows would each move the expiry and
+ * credit the same days twice.
+ */
+export const freeze = async (
+  req: AuthedRequest<MembershipParams, unknown, FreezeMembershipBody>,
+  res: Response,
+): Promise<void> => {
+  const { days, startDate, reason } = req.body;
+  try {
+    const membership = await findForFreeze(req);
+    if (!membership) {
+      res.status(404).json({ error: 'Membership not found' });
+      return;
+    }
+
+    const now = new Date();
+    const today = startOfDay(now);
+
+    // Suspended, cancelled and superseded memberships are not running, so
+    // there is no clock to stop.
+    if (membership.status !== 'active') {
+      res.status(400).json({ error: 'Only an active membership can be frozen' });
+      return;
+    }
+    // A membership that already ran out has no days left to protect. What the
+    // member wants then is a renewal, which sells them new ones.
+    if (membership.expiryDate < today) {
+      res.status(400).json({ error: 'That membership has already expired — renew it instead' });
+      return;
+    }
+
+    const current = activeFreeze(membership, now);
+    if (current) {
+      res.status(400).json({
+        error: 'That membership is already frozen. End the current freeze first.',
+      });
+      return;
+    }
+
+    const start = startOfDay(startDate ?? now);
+    if (start < today) {
+      res.status(400).json({ error: 'A freeze cannot start in the past' });
+      return;
+    }
+    if (start > membership.expiryDate) {
+      res.status(400).json({ error: 'A freeze must start before the membership expires' });
+      return;
+    }
+
+    const until = addDays(start, days);
+    const newExpiry = addDays(membership.expiryDate, days);
+
+    const updated = await prisma.$transaction(async (tx) => {
+      await tx.membershipFreeze.create({
+        data: {
+          gymId: req.gymId,
+          membershipId: membership.id,
+          startDate: start,
+          days,
+          reason: reason ?? null,
+        },
+      });
+      return tx.membership.update({
+        where: { id: membership.id },
+        data: { expiryDate: newExpiry, frozenFrom: start, frozenUntil: until },
+        include: withPlan,
+      });
+    });
+
+    await audit(req, {
+      action: 'membership.freeze',
+      entity: 'membership',
+      entityId: membership.id,
+      entityLabel: `${membership.member.memberNo} · ${membership.member.name} · ${membership.plan.name}`,
+      before: { expiryDate: membership.expiryDate },
+      after: { expiryDate: newExpiry, frozenFrom: start, frozenUntil: until, days },
+      reason: reason ?? undefined,
+    });
+
+    res.json(toView(updated, now));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * Ends a freeze early — the member came back sooner than planned.
+ *
+ * Only the days not yet used come off the expiry. A freeze booked for the
+ * future and called off before it began gives back every day, and leaves no
+ * window behind; one already under way ends today, keeping the days that were
+ * genuinely spent away.
+ */
+export const unfreeze = async (
+  req: AuthedRequest<MembershipParams>,
+  res: Response,
+): Promise<void> => {
+  try {
+    const membership = await findForFreeze(req);
+    if (!membership) {
+      res.status(404).json({ error: 'Membership not found' });
+      return;
+    }
+
+    const now = new Date();
+    const current = activeFreeze(membership, now);
+    if (!current) {
+      res.status(400).json({ error: 'That membership is not frozen' });
+      return;
+    }
+
+    const today = startOfDay(now);
+    const started = current.from <= today;
+    const backOn = started ? today : current.from;
+    const unused = Math.max(0, daysUntil(current.until, backOn));
+    const newExpiry = addDays(membership.expiryDate, -unused);
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const latest = await tx.membershipFreeze.findFirst({
+        where: { membershipId: membership.id },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (latest) {
+        await tx.membershipFreeze.update({
+          where: { id: latest.id },
+          data: { days: latest.days - unused, endedEarlyOn: today },
+        });
+      }
+      return tx.membership.update({
+        where: { id: membership.id },
+        data: {
+          expiryDate: newExpiry,
+          // Never started: no window to keep. Under way: it ends today, so the
+          // record still shows when the member was away.
+          frozenFrom: started ? current.from : null,
+          frozenUntil: started ? today : null,
+        },
+        include: withPlan,
+      });
+    });
+
+    await audit(req, {
+      action: 'membership.unfreeze',
+      entity: 'membership',
+      entityId: membership.id,
+      entityLabel: `${membership.member.memberNo} · ${membership.member.name} · ${membership.plan.name}`,
+      before: { expiryDate: membership.expiryDate, frozenUntil: current.until },
+      after: { expiryDate: newExpiry, daysReturned: unused },
+    });
+
+    res.json(toView(updated, now));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+};

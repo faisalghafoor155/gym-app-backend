@@ -20,6 +20,9 @@ export interface AiChatPayload {
   message: string;
   context?: FitnessAiContext;
   apiKey?: string;
+  /** The member's logged weigh-ins, already written as prompt lines. Built on
+   *  the server from their own records, never taken from the request body. */
+  progress?: string;
 }
 
 const SYSTEM_PROMPT = `You are "GymPro AI", an elite Certified Sports Nutritionist, Strength Coach, and Master Bodybuilding Trainer.
@@ -32,7 +35,7 @@ Tone & Language:
 - Structure answers with bullet points, bold headings, and clear dosages/timings so it's easy for gym lifters to read on mobile.`;
 
 export async function askFitnessAi(payload: AiChatPayload): Promise<string> {
-  const { message, context, apiKey: userKey } = payload;
+  const { message, context, apiKey: userKey, progress } = payload;
   const geminiKey = userKey || process.env.GEMINI_API_KEY;
   const openaiKey = process.env.OPENAI_API_KEY;
 
@@ -52,9 +55,16 @@ Current Lifter Profile:
 - Target Daily Water: ${context.waterLiters ?? 4.0} Liters
 ` : '';
 
+  const progressStr = progress ? `
+Logged Body Measurements (oldest to newest):
+${progress}
+Use this trend when judging whether the current plan is working.
+` : '';
+
   const fullPrompt = `${SYSTEM_PROMPT}
 
 ${contextStr}
+${progressStr}
 
 User Question / Request:
 "${message}"

@@ -597,13 +597,27 @@ export const renewMembershipSchema = z
   .object({
     planId: uuid.optional(),
     amount: money.refine((v) => v > 0, "must be greater than zero"),
+    /** What the period was sold for, when it was not the plan's list price —
+     *  a discount. Absent means the list price. Whatever of it `amount` does
+     *  not cover is a balance the member owes, and shows on the dues list. */
+    price: money.refine((v) => v > 0, "must be greater than zero").optional(),
     method: z.enum(PAYMENT_METHODS, { error: "must be cash or online" }),
     ...paymentChannelFields,
     includeTrainer: z.boolean().optional(),
     trainerId: uuid.or(blankToUndefined).optional(),
     ptFee: money.min(0).optional(),
   })
-  .superRefine(rejectChannelOnCash);
+  .superRefine(rejectChannelOnCash)
+  .superRefine((data, ctx) => {
+    // Paying more than the agreed price is not a payment, it is a typo.
+    if (data.price !== undefined && data.amount > data.price) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["amount"],
+        message: "cannot be more than the agreed price",
+      });
+    }
+  });
 
 // --- audit logs --------------------------------------------------------
 
@@ -1348,6 +1362,137 @@ export const subscribeSchema = z.object({
   plan: z.enum(['basic', 'growth', 'pro']),
 });
 
+// --- membership freeze -------------------------------------------------
+
+/**
+ * The longest single freeze the desk can grant.
+ *
+ * A ceiling rather than a policy: three months covers travel, an injury or
+ * Ramadan, and a freeze longer than that is a membership somebody should
+ * cancel and sell again. Without one, a mistyped 900 would push an expiry out
+ * by years.
+ */
+export const MAX_FREEZE_DAYS = 90;
+
+export const freezeMembershipSchema = z.object({
+  days: z.coerce
+    .number({ error: "must be a number" })
+    .int("must be a whole number")
+    .min(1, "must be at least 1")
+    .max(MAX_FREEZE_DAYS, `cannot be more than ${MAX_FREEZE_DAYS}`),
+  /** Defaults to today. A freeze can be booked ahead — "from the 1st, I'm
+   *  travelling" — but never backdated, which would hand back days the member
+   *  may already have trained on. Checked in the controller, which knows
+   *  where today starts. */
+  startDate: date.or(blankToUndefined).optional(),
+  reason: optionalText(200),
+});
+
+// --- leads -------------------------------------------------------------
+
+export const LEAD_STATUSES = [
+  "new", "contacted", "trial", "converted", "lost",
+] as const;
+
+/** The sources offered first. Anything typed is accepted, as with expense
+ *  categories. */
+export const LEAD_SOURCES = [
+  "walk-in", "call", "whatsapp", "referral", "social", "other",
+] as const;
+
+const leadFields = {
+  name,
+  phone: optionalText(30),
+  source: z.string().trim().min(1, "is required").max(40, "is too long"),
+  interest: optionalText(200),
+  notes: optionalText(1000),
+  // `converted` is absent: a lead becomes converted by naming the member it
+  // became, through the convert endpoint, never by flipping a dropdown.
+  status: z.enum(["new", "contacted", "trial", "lost"], {
+    error: "must be new, contacted, trial or lost",
+  }),
+  followUpOn: date.or(z.literal("").transform(() => null)).nullish(),
+};
+
+export const createLeadSchema = z.object({
+  ...leadFields,
+  source: leadFields.source.default("walk-in"),
+  status: leadFields.status.default("new"),
+});
+
+export const updateLeadSchema = z.object(leadFields).partial();
+
+export const leadQuerySchema = z.object({
+  /** One status, or `open` for every lead still being worked. */
+  status: z.enum([...LEAD_STATUSES, "open"]).or(blankToUndefined).optional(),
+  /** Only leads whose follow-up is today or overdue — "who do I call now". */
+  due: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((v) => v === "true"),
+  search: z
+    .string()
+    .trim()
+    .max(100, "is too long")
+    .transform((v) => v || undefined)
+    .optional(),
+  ...pageParams(),
+});
+
+export const convertLeadSchema = z.object({ memberId: uuid });
+
+// --- member progress ---------------------------------------------------
+
+/** A body measurement: positive, one decimal place is plenty, and capped well
+ *  above anything a person measures so a slipped key is caught. */
+const measure = (max: number) =>
+  z
+    .literal("")
+    .transform(() => null)
+    .or(
+      z.coerce
+        .number({ error: "must be a number" })
+        .finite("must be a number")
+        .positive("must be more than zero")
+        .max(max, "is unrealistically large"),
+    )
+    .nullish();
+
+export const createMeasurementSchema = z
+  .object({
+    measuredOn: date
+      .refine(
+        (d) => d.getTime() <= new Date().setHours(23, 59, 59, 999),
+        "cannot be in the future",
+      )
+      .optional(),
+    weightKg: measure(400),
+    bodyFatPct: measure(75),
+    chestCm: measure(300),
+    waistCm: measure(300),
+    hipsCm: measure(300),
+    armCm: measure(150),
+    thighCm: measure(200),
+    photo,
+    notes: optionalText(500),
+  })
+  .superRefine((data, ctx) => {
+    // A weigh-in that records nothing is a row nobody can chart.
+    const any = [
+      data.weightKg, data.bodyFatPct, data.chestCm, data.waistCm,
+      data.hipsCm, data.armCm, data.thighCm, data.photo,
+    ].some((v) => v != null);
+    if (!any) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["weightKg"],
+        message: "enter at least one measurement or a photo",
+      });
+    }
+  });
+
+export const measurementParams = z.object({ id: uuid, measurementId: uuid });
+
 // --- inferred request-body types ---------------------------------------
 
 export type RegisterBody = z.infer<typeof registerSchema>;
@@ -1438,3 +1583,11 @@ export type ProviderParams = z.infer<typeof providerParams>;
 export type ConfirmManualParams = z.infer<typeof idParam>;
 
 export type Gender = (typeof GENDERS)[number];
+
+export type FreezeMembershipBody = z.infer<typeof freezeMembershipSchema>;
+export type CreateLeadBody = z.infer<typeof createLeadSchema>;
+export type UpdateLeadBody = z.infer<typeof updateLeadSchema>;
+export type LeadQuery = z.infer<typeof leadQuerySchema>;
+export type ConvertLeadBody = z.infer<typeof convertLeadSchema>;
+export type CreateMeasurementBody = z.infer<typeof createMeasurementSchema>;
+export type MeasurementParams = z.infer<typeof measurementParams>;

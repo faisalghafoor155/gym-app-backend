@@ -324,11 +324,11 @@ describe("POST /members/:id/memberships/:membershipId/renew", () => {
 });
 
 describe("removed routes", () => {
-  // `resume` used to be listed here too. It exists again, alongside suspend
-  // and cancel, and is covered in membershipStatus.integration.test.ts —
-  // extending a membership by a number of days still is not a thing the app
-  // does, which is what these two guard.
-  it.each(["extend", "freeze"])("no longer answers /%s", async (action) => {
+  // `resume` and `freeze` used to be listed here too. Both exist again —
+  // freeze now leaves a MembershipFreeze row and an audit entry behind, and is
+  // covered in retentionFeatures.integration.test.ts. Extending a membership
+  // by a free number of days still is not a thing the app does.
+  it.each(["extend"])("no longer answers /%s", async (action) => {
     const owner = await makeGym();
     const { member, membership } = await memberDueForRenewal(owner.gymId);
 

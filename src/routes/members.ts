@@ -17,7 +17,15 @@ import {
   createMembershipSchema,
   renewMembershipSchema,
   membershipHistoryQuerySchema,
+  freezeMembershipSchema,
+  createMeasurementSchema,
+  measurementParams,
 } from "../schemas.js";
+import {
+  listForMember as listMeasurements,
+  createForMember as createMeasurement,
+  removeForMember as removeMeasurement,
+} from "../controllers/measurementsController.js";
 import {
   getAll,
   getOne,
@@ -34,6 +42,8 @@ import {
   suspend as suspendMembership,
   resume as resumeMembership,
   cancel as cancelMembership,
+  freeze as freezeMembership,
+  unfreeze as unfreezeMembership,
 } from "../controllers/membershipsController.js";
 
 const router = Router();
@@ -121,6 +131,43 @@ router.post(
   requirePermission("canManageMemberships"),
   validate(membershipParams, "params"),
   authed(cancelMembership),
+);
+
+// Stopping the clock for travel or injury, and starting it again early. Same
+// permission as suspending: both are the desk changing a membership in hand.
+router.post(
+  "/:id/memberships/:membershipId/freeze",
+  requirePermission("canManageMemberships"),
+  validate(membershipParams, "params"),
+  validate(freezeMembershipSchema),
+  authed(freezeMembership),
+);
+router.post(
+  "/:id/memberships/:membershipId/unfreeze",
+  requirePermission("canManageMemberships"),
+  validate(membershipParams, "params"),
+  authed(unfreezeMembership),
+);
+
+// Weigh-ins. Any staff member can read them — a trainer on the floor needs
+// the numbers — but recording or removing one is member management.
+router.get(
+  "/:id/measurements",
+  validate(idParam, "params"),
+  authed(listMeasurements),
+);
+router.post(
+  "/:id/measurements",
+  requirePermission("canManageMembers"),
+  validate(idParam, "params"),
+  validate(createMeasurementSchema),
+  authed(createMeasurement),
+);
+router.delete(
+  "/:id/measurements/:measurementId",
+  requirePermission("canManageMembers"),
+  validate(measurementParams, "params"),
+  authed(removeMeasurement),
 );
 
 export default router;

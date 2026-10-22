@@ -195,7 +195,22 @@ describe('toView', () => {
       durationDays: 30,
       status: 'active',
       daysLeft: 16,
+      freeze: null,
     });
+  });
+
+  it('reports a freeze that is under way or booked, and forgets one that ended', () => {
+    const from = new Date(NOW.getTime() - 2 * 86_400_000);
+    const until = new Date(NOW.getTime() + 5 * 86_400_000);
+    expect(toView({ ...stored, frozenFrom: from, frozenUntil: until }, NOW).freeze)
+      .toEqual({ from, until });
+
+    const later = new Date(NOW.getTime() + 3 * 86_400_000);
+    expect(toView({ ...stored, frozenFrom: later, frozenUntil: until }, NOW).freeze)
+      .toEqual({ from: later, until });
+
+    const ended = new Date(NOW.getTime() - 86_400_000);
+    expect(toView({ ...stored, frozenFrom: from, frozenUntil: ended }, NOW).freeze).toBeNull();
   });
 
   it('returns pricePaid as a number so the JSON contract stays numeric', () => {

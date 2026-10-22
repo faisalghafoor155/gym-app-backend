@@ -188,6 +188,8 @@ model Gym {
   paymentIntents  PaymentIntent[]
   expenses        Expense[]
   fingerprints    FingerprintTemplate[]
+  leads           Lead[]
+  measurements    MemberMeasurement[]
 
   /// What this gym pays *us*, as opposed to everything above, which is what
   /// its members pay it. Optional because a gym is only given a billing row
@@ -282,10 +284,12 @@ model User {
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
-  gym              Gym       @relation(fields: [gymId], references: [id])
-  member           Member?   @relation(fields: [memberId], references: [id])
-  recordedPayments Payment[] @relation("PaymentRecordedBy")
-  recordedExpenses Expense[] @relation("ExpenseRecordedBy")
+  gym                  Gym                 @relation(fields: [gymId], references: [id])
+  member               Member?             @relation(fields: [memberId], references: [id])
+  recordedPayments     Payment[]           @relation("PaymentRecordedBy")
+  recordedExpenses     Expense[]           @relation("ExpenseRecordedBy")
+  createdLeads         Lead[]              @relation("LeadCreatedBy")
+  recordedMeasurements MemberMeasurement[] @relation("MeasurementRecordedBy")
 
   @@index([gymId])
   @@index([gymId, role])
@@ -351,6 +355,9 @@ model Member {
   classBookings  ClassBooking[]
   paymentIntents PaymentIntent[]
   fingerprint    FingerprintTemplate?
+  measurements   MemberMeasurement[]
+  /// The enquiry this member was converted from, when there was one.
+  lead           Lead?
 
   @@unique([gymId, memberNo])
   @@index([gymId])
@@ -396,10 +403,20 @@ model Membership {
   planId   String
 
   startDate  DateTime
-  /// Always startDate + plan.durationDays, computed on the server. The client
-  /// never sends this — an expiry date the front desk can type is an expiry
-  /// date the front desk can quietly move.
+  /// startDate + plan.durationDays, computed on the server, plus the days of
+  /// any freeze. The client never sends this — an expiry date the front desk
+  /// can type is an expiry date the front desk can quietly move. A freeze is
+  /// the one thing that moves it, and every freeze leaves a MembershipFreeze
+  /// row and an audit entry behind, so the move is never quiet.
   expiryDate DateTime
+
+  /// The latest freeze's window, copied here from its MembershipFreeze row so
+  /// every read of a membership can say "frozen until" without a join. Null
+  /// when the membership has never been frozen. A window that has already
+  /// ended is history, not a freeze — `toView` only reports one that covers
+  /// today or starts later.
+  frozenFrom  DateTime?
+  frozenUntil DateTime?
 
   /// The plan's price at the moment of sale. Snapshotted because changing a
   /// plan's price must not silently rewrite what past members were charged.
@@ -409,15 +426,46 @@ model Membership {
 
   createdAt DateTime @default(now())
 
-  gym      Gym            @relation(fields: [gymId], references: [id])
-  member   Member         @relation(fields: [memberId], references: [id])
-  plan     MembershipPlan @relation(fields: [planId], references: [id])
+  gym      Gym                @relation(fields: [gymId], references: [id])
+  member   Member             @relation(fields: [memberId], references: [id])
+  plan     MembershipPlan     @relation(fields: [planId], references: [id])
   payments Payment[]
+  freezes  MembershipFreeze[]
 
   @@index([gymId])
   @@index([memberId])
   @@index([gymId, status])
   @@index([gymId, expiryDate])
+}
+
+/// One pause a member asked for — travel, injury, Ramadan — and the days it
+/// gave back.
+///
+/// Freezing was taken out once, on the argument that a gym renews rather than
+/// quietly moving an expiry. That argument is about *quietly*: this table is
+/// what makes a freeze loud. The expiry moves by exactly `days`, the row says
+/// who asked for how long and why, and ending a freeze early hands back only
+/// the days not yet used.
+model MembershipFreeze {
+  id           String @id @default(uuid())
+  gymId        String
+  membershipId String
+
+  /// The first frozen day.
+  startDate    DateTime
+  /// How many days the expiry moved by. Reduced when the freeze is ended
+  /// early, so it always equals the days actually granted.
+  days         Int
+  /// Set when the desk ended the freeze before it ran its course.
+  endedEarlyOn DateTime?
+  reason       String?
+
+  createdAt DateTime @default(now())
+
+  membership Membership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+
+  @@index([gymId])
+  @@index([membershipId])
 }
 
 model Attendance {
@@ -645,6 +693,9 @@ enum ReminderKind {
   /// Sent a few days before, while renewing is still ahead of the member
   /// rather than behind them.
   membershipExpiringSoon
+  /// Sent while part of a membership's price is still unpaid, at most once
+  /// every few days — see `jobs/duesReminders.ts`.
+  duesOutstanding
 }
 
 /// How a reminder was delivered.
@@ -691,6 +742,143 @@ model ReminderLog {
 
   @@unique([membershipId, kind, channel, sentOn])
   @@index([gymId, sentOn])
+  /// Serves the dues job's "when was this membership last chased?".
+  @@index([membershipId, kind])
+}
+
+/// What a GreetingLog row was for.
+enum GreetingKind {
+  birthday
+  /// Another year since the member joined.
+  anniversary
+}
+
+/// One greeting that has been sent, so it is never sent twice in a year.
+///
+/// Apart from ReminderLog because a greeting is about the member, not about
+/// anything they bought: ReminderLog keys every row on a membership, and a
+/// birthday that happens to fall on the day of a renewal would otherwise be
+/// claimable twice — once against each membership.
+model GreetingLog {
+  id       String          @id @default(uuid())
+  gymId    String
+  memberId String
+  kind     GreetingKind
+  channel  ReminderChannel
+  /// The year it was for. A greeting is once a year by definition, so the
+  /// year — not the day — is what a second run must collide on.
+  year     Int
+  sentTo   String
+
+  createdAt DateTime @default(now())
+
+  @@unique([memberId, kind, year, channel])
+  @@index([gymId, createdAt])
+}
+
+/// Where an enquiry has got to.
+enum LeadStatus {
+  /// Asked, and nobody has followed up yet.
+  new
+  /// Somebody has called or messaged them back.
+  contacted
+  /// Came in for a trial session.
+  trial
+  /// Joined. `convertedMemberId` says as whom.
+  converted
+  /// Said no, or stopped answering.
+  lost
+}
+
+/// Somebody who asked about the gym but has not joined.
+///
+/// Walk-ins and phone enquiries were the revenue nobody wrote down: a person
+/// asks the price on Monday, is told to come back, and by Friday nobody
+/// remembers they existed. This is the list the desk works from to call them
+/// back.
+model Lead {
+  id    String @id @default(uuid())
+  gymId String
+
+  name  String
+  phone String?
+
+  /// How they got in touch — walk-in, call, whatsapp, referral, social.
+  /// Free text like `Expense.category`: the client offers the common ones,
+  /// and a gym that advertises somewhere new is not forced into "other".
+  source   String  @default("walk-in")
+  /// What they asked about, in the desk's words: "weight loss, evening batch".
+  interest String?
+  notes    String?
+
+  status     LeadStatus @default(new)
+  /// When somebody should get back to them. Null means nobody has decided.
+  followUpOn DateTime?
+
+  /// The member this enquiry became. Unique because one person joins once;
+  /// `SetNull` because deleting the member must not delete the record of how
+  /// they found the gym.
+  convertedMemberId String?   @unique
+  convertedAt       DateTime?
+
+  /// Who wrote it down. `SetNull` for the same reason Payment uses it.
+  createdById String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  gym             Gym     @relation(fields: [gymId], references: [id])
+  convertedMember Member? @relation(fields: [convertedMemberId], references: [id], onDelete: SetNull)
+  createdBy       User?   @relation("LeadCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([gymId, status])
+  /// Serves "who should we call today".
+  @@index([gymId, followUpOn])
+}
+
+/// One weigh-in: a member's body measurements on a given day.
+///
+/// Every number is optional. A member stepping on the scale has a weight and
+/// nothing else, and a form that demanded a waist measurement as well would
+/// get a made-up one. Centimetres and kilograms because that is what a
+/// Pakistani gym's tape and scale read.
+model MemberMeasurement {
+  id       String @id @default(uuid())
+  gymId    String
+  memberId String
+
+  /// The day it was taken, which is not always the day it was typed in.
+  measuredOn DateTime
+
+  weightKg   Decimal? @db.Decimal(5, 1)
+  bodyFatPct Decimal? @db.Decimal(4, 1)
+  chestCm    Decimal? @db.Decimal(5, 1)
+  waistCm    Decimal? @db.Decimal(5, 1)
+  hipsCm     Decimal? @db.Decimal(5, 1)
+  armCm      Decimal? @db.Decimal(5, 1)
+  thighCm    Decimal? @db.Decimal(5, 1)
+
+  /// A progress photo, kept exactly as `Member.photoKey` keeps a face: the S3
+  /// key, never a URL, signed per response. `photo` is the inline fallback
+  /// for an install without S3, written only where `canStorePhotoInline`
+  /// allows it.
+  photoKey String?
+  photo    String?
+
+  notes String?
+
+  /// Who entered it — a trainer, the desk, or the member themselves.
+  recordedById String?
+
+  createdAt DateTime @default(now())
+
+  gym        Gym    @relation(fields: [gymId], references: [id])
+  /// Cascade: these are the member's own body, and they go with the member.
+  member     Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  recordedBy User?  @relation("MeasurementRecordedBy", fields: [recordedById], references: [id], onDelete: SetNull)
+
+  @@index([gymId])
+  @@index([memberId, measuredOn])
 }
 
 model Supplement {

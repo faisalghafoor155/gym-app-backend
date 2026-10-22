@@ -20,6 +20,7 @@ import {
   update,
   remove,
   getDue,
+  getBalances,
   getSummary,
   getMonthlyCollection,
   exportMonthlyCsv,
@@ -49,6 +50,9 @@ router.post(
 router.get("/", validate(paymentQuerySchema, "query"), authed(getAll));
 // Ahead of "/:id" so a literal path is never read as an id.
 router.get("/due", authed(getDue));
+// Everybody who owes money, with no date window — the collection list. Staff
+// level like `/due`: whoever is on the counter is who asks for the balance.
+router.get("/balances", authed(getBalances));
 // CSV export of all payments matching filters
 router.get(
   "/export/csv",

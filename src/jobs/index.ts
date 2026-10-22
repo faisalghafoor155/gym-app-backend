@@ -1,5 +1,7 @@
 import cron from 'node-cron';
 import { runExpiryReminders } from './expiryReminders.js';
+import { runDuesReminders } from './duesReminders.js';
+import { runGreetings } from './greetings.js';
 import { runFingerprintRetention } from './fingerprintRetention.js';
 import { runSubscriptionBilling } from './subscriptionBilling.js';
 import { subscriptionsEnabled } from '../services/subscription.js';
@@ -95,6 +97,27 @@ export const startJobs = (): void => {
     return (
       `due ${run.due}, sent ${run.sent}, already sent ${run.skippedAlreadySent}, ` +
       `no email ${run.skippedNoEmail}, failed ${run.failed}`
+    );
+  });
+
+  // The other two member-facing messages share the reminder's slot: all three
+  // are "the gym talking to its members", and a member reading them over
+  // breakfast is the point of nine o'clock for each.
+  schedule('dues reminders', 'REMINDER_CRON', SCHEDULE, async () => {
+    const run = await runDuesReminders();
+    return (
+      `owing ${run.owing}, sent ${run.sent}, reminded recently ${run.skippedRecently}, ` +
+      `already sent ${run.skippedAlreadySent}, no whatsapp ${run.skippedNoWhatsApp}, ` +
+      `failed ${run.failed}`
+    );
+  });
+
+  schedule('greetings', 'REMINDER_CRON', SCHEDULE, async () => {
+    const run = await runGreetings();
+    return (
+      `birthdays ${run.birthdays}, anniversaries ${run.anniversaries}, sent ${run.sent}, ` +
+      `already sent ${run.skippedAlreadySent}, no whatsapp ${run.skippedNoWhatsApp}, ` +
+      `failed ${run.failed}`
     );
   });
 

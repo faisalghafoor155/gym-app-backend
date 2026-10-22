@@ -15,8 +15,10 @@ import {
   updateMyProfile,
 } from "../controllers/meController.js";
 import { selfCheckin } from "../controllers/attendanceController.js";
+import { createMine, listMine, removeMine } from "../controllers/measurementsController.js";
 import {
   bookMyClassSchema,
+  createMeasurementSchema,
   idParam,
   myHistoryQuerySchema,
   myScheduleQuerySchema,
@@ -78,5 +80,19 @@ router.delete(
 // Checking in by scanning the QR on the gym's screen. The token proves the
 // phone was at the gym in the last couple of minutes; the session says who.
 router.post("/checkin", validate(selfCheckinSchema), authed(selfCheckin));
+
+// The member's own weigh-ins. They may log their own and take back what they
+// logged; a measurement the gym recorded stays the gym's to remove.
+router.get("/measurements", authed(listMine));
+router.post(
+  "/measurements",
+  validate(createMeasurementSchema),
+  authed(createMine),
+);
+router.delete(
+  "/measurements/:id",
+  validate(idParam, "params"),
+  authed(removeMine),
+);
 
 export default router;

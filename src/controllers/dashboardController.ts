@@ -7,6 +7,7 @@ import {
 import { sum } from '../services/money.js';
 import type { AuthedRequest } from '../types.js';
 import { hasPermission } from '../services/permissions.js';
+import { celebrationsOn } from '../services/celebrations.js';
 
 const memberSummary = {
   member: { select: { id: true, memberNo: true, name: true, phone: true } },
@@ -331,6 +332,32 @@ export const getStats = async (req: AuthedRequest, res: Response): Promise<void>
           collection,
         },
       }),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * Today's birthdays and joining anniversaries, for the dashboard card the desk
+ * sends greetings from.
+ *
+ * Its own endpoint rather than part of `getStats`: the stats are refetched on
+ * every visit and are about money and attendance, while this is a short list
+ * that only changes at midnight.
+ */
+export const getCelebrations = async (req: AuthedRequest, res: Response): Promise<void> => {
+  try {
+    const { birthdays, anniversaries } = await celebrationsOn(new Date(), req.gymId);
+    // Only what the card shows. The gym and the opt-out flag are the job's
+    // business, and the card is already inside the gym.
+    const strip = <T extends { gym: unknown; gymId: string; whatsappOptOut: boolean }>(
+      { gym: _gym, gymId: _gymId, whatsappOptOut: _optOut, ...rest }: T,
+    ) => rest;
+    res.json({
+      birthdays: birthdays.map(strip),
+      anniversaries: anniversaries.map(strip),
     });
   } catch (err) {
     console.error(err);

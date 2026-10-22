@@ -176,4 +176,27 @@ export const templates = {
     template: 'payment_receipt',
     variables: [member, gym, amount, forWhat, when],
   }),
+
+  /** Part of a membership's price is still unpaid. `amount` is already
+   *  written for a person ("Rs. 2,500"). */
+  duesReminder: (
+    member: string, gym: string, amount: string, plan: string,
+  ): Omit<WhatsAppMessage, 'to'> => ({
+    template: 'dues_reminder',
+    variables: [member, gym, amount, plan],
+  }),
+
+  /** Happy birthday, from the gym. */
+  birthdayGreeting: (member: string, gym: string): Omit<WhatsAppMessage, 'to'> => ({
+    template: 'birthday_greeting',
+    variables: [member, gym],
+  }),
+
+  /** Another year since they joined. `years` is a number written as text. */
+  anniversaryGreeting: (
+    member: string, gym: string, years: string,
+  ): Omit<WhatsAppMessage, 'to'> => ({
+    template: 'member_anniversary',
+    variables: [member, gym, years],
+  }),
 } as const;
