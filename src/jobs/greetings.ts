@@ -3,7 +3,8 @@ import prisma from '../db.js';
 import { celebrationsOn, type Celebrant } from '../services/celebrations.js';
 import { canWhatsApp } from '../services/phone.js';
 import { planHasFeature } from '../services/subscription.js';
-import { sendWhatsApp, templates, whatsappEnabled } from '../services/whatsapp.js';
+import { templates } from '../services/whatsapp.js';
+import { messagingEnabled, sendMemberMessage } from '../services/messaging.js';
 
 /**
  * Birthday and joining-anniversary greetings, on WhatsApp.
@@ -68,7 +69,7 @@ const greet = async (
     return;
   }
 
-  const result = await sendWhatsApp({ to: m.phone!, ...message });
+  const result = await sendMemberMessage({ to: m.phone!, ...message });
   if (result === 'sent') {
     run.sent++;
     return;
@@ -89,7 +90,7 @@ export const runGreetings = async (now: Date = new Date()): Promise<GreetingRun>
   const { birthdays, anniversaries } = await celebrationsOn(now);
   run.birthdays = birthdays.length;
   run.anniversaries = anniversaries.length;
-  if (!whatsappEnabled) return run;
+  if (!messagingEnabled()) return run;
 
   const year = now.getFullYear();
   for (const m of birthdays) {

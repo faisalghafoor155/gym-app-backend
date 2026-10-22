@@ -8,7 +8,7 @@ import { idParam, createPlanSchema, assignPlanSchema } from '../schemas.js';
 import {
   getWorkoutPlans, createWorkoutPlan,
   getDietPlans, createDietPlan,
-  assignPlan, getMemberPlans,
+  assignPlan, getMemberPlans, deleteWorkoutPlan, deleteDietPlan,
 } from '../controllers/plansController.js';
 
 const router = Router();
@@ -36,6 +36,18 @@ router.post(
   requirePermission('canManagePlans'),
   validate(createPlanSchema),
   authed(createDietPlan),
+);
+router.delete(
+  '/workout/:id',
+  requirePermission('canManagePlans'),
+  validate(idParam, 'params'),
+  authed(deleteWorkoutPlan),
+);
+router.delete(
+  '/diet/:id',
+  requirePermission('canManagePlans'),
+  validate(idParam, 'params'),
+  authed(deleteDietPlan),
 );
 router.post(
   '/assign',

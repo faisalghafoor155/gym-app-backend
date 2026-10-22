@@ -19,11 +19,13 @@ export const getAll = async (
   req: AuthedRequest<Record<string, string>, unknown, unknown, SupplementQuery>,
   res: Response,
 ): Promise<void> => {
-  const { search, category, page, limit, all } = req.query;
+  const { search, category, page, limit, all, lowStock } = req.query;
   try {
     const where = {
       gymId: req.gymId,
       ...(category && { category }),
+      // Compared column to column: each product has its own threshold.
+      ...(lowStock && { stock: { lte: prisma.supplement.fields.lowStockAt } }),
       ...(search && {
         OR: [
           { name: { contains: search, mode: 'insensitive' as const } },
@@ -40,7 +42,7 @@ export const getAll = async (
         orderBy: { createdAt: 'desc' },
       });
       res.json({
-        data: supplements.map(s => withMoney(s, 'price')),
+        data: supplements.map(s => withMoney(s, 'price', 'costPrice')),
         total: supplements.length,
         page: 1,
         limit: supplements.length,
@@ -56,7 +58,7 @@ export const getAll = async (
     // by the chip already selected — which would leave every other one at zero.
     const searchWhere = { gymId: req.gymId, ...(where.OR && { OR: where.OR }) };
 
-    const [supplements, total, byCategory, outOfStock] = await Promise.all([
+    const [supplements, total, byCategory, outOfStock, lowStockCount] = await Promise.all([
       prisma.supplement.findMany({
         where,
         orderBy: { createdAt: 'desc' },
@@ -70,10 +72,13 @@ export const getAll = async (
         _count: { _all: true },
       }),
       prisma.supplement.count({ where: { ...searchWhere, stock: { lte: 0 } } }),
+      prisma.supplement.count({
+        where: { ...searchWhere, stock: { lte: prisma.supplement.fields.lowStockAt } },
+      }),
     ]);
 
     res.json({
-      data: supplements.map(s => withMoney(s, 'price')),
+      data: supplements.map(s => withMoney(s, 'price', 'costPrice')),
       total,
       page,
       limit,
@@ -81,6 +86,7 @@ export const getAll = async (
       counts: {
         all: byCategory.reduce((n, c) => n + c._count._all, 0),
         outOfStock,
+        lowStock: lowStockCount,
         byCategory: Object.fromEntries(
           byCategory.map(c => [c.category, c._count._all]),
         ),
@@ -97,7 +103,7 @@ export const create = async (
   res: Response,
 ): Promise<void> => {
   // Already validated and coerced by the route's schema.
-  const { name, category, description, dosage, timing, price, stock } = req.body;
+  const { name, category, description, dosage, timing, price, stock, costPrice, lowStockAt } = req.body;
   try {
     const supplement = await prisma.supplement.create({
       data: {
@@ -108,9 +114,11 @@ export const create = async (
         timing: timing ?? null,
         price: price ?? null,
         stock: stock ?? 0,
+        costPrice: costPrice ?? null,
+        ...(lowStockAt !== undefined && { lowStockAt }),
       },
     });
-    res.status(201).json(withMoney(supplement, 'price'));
+    res.status(201).json(withMoney(supplement, 'price', 'costPrice'));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
@@ -122,7 +130,7 @@ export const update = async (
   res: Response,
 ): Promise<void> => {
   const { id } = req.params;
-  const { name, category, description, dosage, timing, price, stock } = req.body;
+  const { name, category, description, dosage, timing, price, stock, costPrice, lowStockAt } = req.body;
   try {
     const existing = await prisma.supplement.findFirst({ where: { id, gymId: req.gymId } });
     if (!existing) {
@@ -140,9 +148,11 @@ export const update = async (
         ...(timing !== undefined && { timing }),
         ...(price !== undefined && { price: price ?? null }),
         ...(stock !== undefined && { stock: stock ?? 0 }),
+        ...(costPrice !== undefined && { costPrice: costPrice ?? null }),
+        ...(lowStockAt !== undefined && { lowStockAt }),
       },
     });
-    res.json(withMoney(supplement, 'price'));
+    res.json(withMoney(supplement, 'price', 'costPrice'));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
@@ -263,6 +273,7 @@ export const sell = async (
           quantity,
           unitPrice,
           total,
+          unitCost: supplement.costPrice,
           paymentId: payment?.id ?? null,
           soldAt: when,
           notes,
@@ -330,7 +341,7 @@ export const restock = async (
       reason: notes ?? null,
     });
 
-    res.json(withMoney(supplement, 'price'));
+    res.json(withMoney(supplement, 'price', 'costPrice'));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
@@ -566,6 +577,7 @@ export const checkoutCart = async (
             quantity: item.quantity,
             unitPrice: supp.price!,
             total: itemTotal,
+            unitCost: supp.costPrice,
             paymentId: paymentId || null,
             notes: notes || null,
           },

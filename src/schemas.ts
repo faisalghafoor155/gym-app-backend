@@ -335,8 +335,20 @@ export const createMemberSchema = z
       .or(blankToUndefined)
       .nullish(),
     feeReference: optionalText(100),
+    /** The existing member who brought this one in. Checked against the gym
+     *  in the controller. */
+    referredById: uuid.or(blankToUndefined).nullish(),
+    /** A discount code for the membership sold with the registration. */
+    promoCode: z.string().trim().max(40, "is too long").or(blankToUndefined).optional(),
   })
   .superRefine((data, ctx) => {
+    if (data.promoCode && !data.planId) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["promoCode"],
+        message: "needs a plan to discount",
+      });
+    }
     if (data.feeMethod === "cash" && data.feeChannel) {
       ctx.addIssue({
         code: "custom",
@@ -471,6 +483,8 @@ export const updateMyProfileSchema = z.object({
     .nullish(),
   address: optionalText(500).optional(),
   emergencyContact: optionalText(100).optional(),
+  /** So the gym can wish them on the day. Blank clears it. */
+  dateOfBirth: birthDate.or(z.literal("").transform(() => null)),
 });
 
 /**
@@ -601,6 +615,9 @@ export const renewMembershipSchema = z
      *  a discount. Absent means the list price. Whatever of it `amount` does
      *  not cover is a balance the member owes, and shows on the dues list. */
     price: money.refine((v) => v > 0, "must be greater than zero").optional(),
+    /** A discount code. When given, the code sets the price and `price` must
+     *  be left out — two discounts on one sale is one too many. */
+    promoCode: z.string().trim().max(40, "is too long").or(blankToUndefined).optional(),
     method: z.enum(PAYMENT_METHODS, { error: "must be cash or online" }),
     ...paymentChannelFields,
     includeTrainer: z.boolean().optional(),
@@ -609,6 +626,13 @@ export const renewMembershipSchema = z
   })
   .superRefine(rejectChannelOnCash)
   .superRefine((data, ctx) => {
+    if (data.promoCode && data.price !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["price"],
+        message: "cannot be set together with a promo code",
+      });
+    }
     // Paying more than the agreed price is not a payment, it is a typo.
     if (data.price !== undefined && data.amount > data.price) {
       ctx.addIssue({
@@ -844,6 +868,10 @@ const supplementBase = {
   timing: optionalText(200),
   price: money.nullish(),
   stock: wholeNumber.optional(),
+  /** What the gym pays per unit. Blank leaves profit unreported. */
+  costPrice: money.nullish(),
+  /** Stock at or below this counts as running low. */
+  lowStockAt: wholeNumber.max(10_000, "is unrealistically large").optional(),
 };
 
 export const createSupplementSchema = z.object(supplementBase);
@@ -916,6 +944,8 @@ export const supplementQuerySchema = z.object({
   // The POS cart offers every product; a picker that stopped at 25 would hide
   // stock the counter is trying to sell.
   all: allFlag,
+  /** Only products at or below their own low-stock threshold. */
+  lowStock: allFlag,
 });
 
 /** How many months of history the sales report covers. */
@@ -1287,6 +1317,11 @@ export const updateGymSettingsSchema = z.object({
   easypaisaAccount: optionalText(200).optional(),
   jazzcashAccount: optionalText(200).optional(),
   bankAccount: optionalText(300).optional(),
+  /** Free days a referrer earns per friend who joins. Zero tracks referrals
+   *  without a days reward. */
+  referralRewardDays: wholeNumber.max(90, "cannot be more than 90").optional(),
+  /** Days without a visit before a member shows as inactive. */
+  inactivityDays: wholeNumber.min(3, "must be at least 3").max(90, "cannot be more than 90").optional(),
 });
 
 // --- online payments ---------------------------------------------------
@@ -1387,59 +1422,6 @@ export const freezeMembershipSchema = z.object({
   startDate: date.or(blankToUndefined).optional(),
   reason: optionalText(200),
 });
-
-// --- leads -------------------------------------------------------------
-
-export const LEAD_STATUSES = [
-  "new", "contacted", "trial", "converted", "lost",
-] as const;
-
-/** The sources offered first. Anything typed is accepted, as with expense
- *  categories. */
-export const LEAD_SOURCES = [
-  "walk-in", "call", "whatsapp", "referral", "social", "other",
-] as const;
-
-const leadFields = {
-  name,
-  phone: optionalText(30),
-  source: z.string().trim().min(1, "is required").max(40, "is too long"),
-  interest: optionalText(200),
-  notes: optionalText(1000),
-  // `converted` is absent: a lead becomes converted by naming the member it
-  // became, through the convert endpoint, never by flipping a dropdown.
-  status: z.enum(["new", "contacted", "trial", "lost"], {
-    error: "must be new, contacted, trial or lost",
-  }),
-  followUpOn: date.or(z.literal("").transform(() => null)).nullish(),
-};
-
-export const createLeadSchema = z.object({
-  ...leadFields,
-  source: leadFields.source.default("walk-in"),
-  status: leadFields.status.default("new"),
-});
-
-export const updateLeadSchema = z.object(leadFields).partial();
-
-export const leadQuerySchema = z.object({
-  /** One status, or `open` for every lead still being worked. */
-  status: z.enum([...LEAD_STATUSES, "open"]).or(blankToUndefined).optional(),
-  /** Only leads whose follow-up is today or overdue — "who do I call now". */
-  due: z
-    .enum(["true", "false"])
-    .optional()
-    .transform((v) => v === "true"),
-  search: z
-    .string()
-    .trim()
-    .max(100, "is too long")
-    .transform((v) => v || undefined)
-    .optional(),
-  ...pageParams(),
-});
-
-export const convertLeadSchema = z.object({ memberId: uuid });
 
 // --- member progress ---------------------------------------------------
 
@@ -1585,9 +1567,119 @@ export type ConfirmManualParams = z.infer<typeof idParam>;
 export type Gender = (typeof GENDERS)[number];
 
 export type FreezeMembershipBody = z.infer<typeof freezeMembershipSchema>;
-export type CreateLeadBody = z.infer<typeof createLeadSchema>;
-export type UpdateLeadBody = z.infer<typeof updateLeadSchema>;
-export type LeadQuery = z.infer<typeof leadQuerySchema>;
-export type ConvertLeadBody = z.infer<typeof convertLeadSchema>;
 export type CreateMeasurementBody = z.infer<typeof createMeasurementSchema>;
 export type MeasurementParams = z.infer<typeof measurementParams>;
+
+// --- promo codes -------------------------------------------------------
+
+const promoFields = {
+  code: z
+    .string()
+    .trim()
+    .min(2, "is too short")
+    .max(40, "is too long")
+    .regex(/^[A-Za-z0-9_-]+$/, "may only use letters, numbers, - and _")
+    .transform((v) => v.toUpperCase()),
+  description: optionalText(200),
+  kind: z.enum(["percent", "fixed"], { error: "must be percent or fixed" }),
+  value: money.refine((v) => v > 0, "must be greater than zero"),
+  validFrom: date.or(z.literal("").transform(() => null)).nullish(),
+  validUntil: date.or(z.literal("").transform(() => null)).nullish(),
+  maxUses: wholeNumber.min(1, "must be at least 1").or(z.literal("").transform(() => null)).nullish(),
+  isActive: z.boolean().optional(),
+};
+
+const checkPromoValue = (
+  data: { kind?: string; value?: number; validFrom?: Date | null; validUntil?: Date | null },
+  ctx: z.RefinementCtx,
+): void => {
+  if (data.kind === "percent" && data.value !== undefined && data.value > 100) {
+    ctx.addIssue({ code: "custom", path: ["value"], message: "cannot be more than 100%" });
+  }
+  if (data.validFrom && data.validUntil && data.validUntil < data.validFrom) {
+    ctx.addIssue({ code: "custom", path: ["validUntil"], message: "must be after the start date" });
+  }
+};
+
+export const createPromoCodeSchema = z.object(promoFields).superRefine(checkPromoValue);
+export const updatePromoCodeSchema = z.object(promoFields).partial().superRefine(checkPromoValue);
+
+/** "Would this code work on this plan?" — the desk's Apply button. */
+export const checkPromoQuerySchema = z.object({
+  code: z.string().trim().min(1, "is required").max(40),
+  planId: uuid,
+});
+
+// --- referrals ---------------------------------------------------------
+
+export const referralQuerySchema = z.object({
+  status: z.enum(["pending", "granted", "cancelled"]).or(blankToUndefined).optional(),
+});
+
+export const grantReferralSchema = z.object({
+  /** What was given, when it was not (only) free days. */
+  note: optionalText(200),
+});
+
+// --- inactivity --------------------------------------------------------
+
+export const inactiveQuerySchema = z.object({
+  /** Overrides the gym's setting for this one look. */
+  days: z.coerce.number().int().min(3).max(365).optional(),
+});
+
+// --- lockers -----------------------------------------------------------
+
+const lockerNumber = z.string().trim().min(1, "is required").max(20, "is too long");
+
+export const createLockersSchema = z
+  .object({
+    /** One locker by its number... */
+    number: lockerNumber.optional(),
+    /** ...or a numbered run, "1" to "40", added in one go. */
+    from: z.coerce.number().int().min(0).max(9999).optional(),
+    to: z.coerce.number().int().min(0).max(9999).optional(),
+    /** Prefixed to every number in a run: "A-" gives A-1, A-2 … */
+    prefix: z.string().trim().max(10).optional(),
+    location: optionalText(100),
+  })
+  .superRefine((d, ctx) => {
+    const run = d.from !== undefined || d.to !== undefined;
+    if (!d.number && !run) {
+      ctx.addIssue({ code: "custom", path: ["number"], message: "is required" });
+    }
+    if (run && (d.from === undefined || d.to === undefined || d.to < d.from)) {
+      ctx.addIssue({ code: "custom", path: ["to"], message: "must be at or after the first number" });
+    }
+    if (run && d.to! - d.from! >= 500) {
+      ctx.addIssue({ code: "custom", path: ["to"], message: "can add at most 500 at once" });
+    }
+  });
+
+export const updateLockerSchema = z.object({
+  number: lockerNumber.optional(),
+  location: optionalText(100),
+  notes: optionalText(300),
+});
+
+export const assignLockerSchema = z.object({
+  memberId: uuid,
+  notes: optionalText(300),
+});
+
+// --- supplement profit -------------------------------------------------
+
+export const supplementProfitQuerySchema = z.object({
+  months: z.coerce.number().int().min(1).max(24).default(1),
+});
+
+export type CreatePromoCodeBody = z.infer<typeof createPromoCodeSchema>;
+export type UpdatePromoCodeBody = z.infer<typeof updatePromoCodeSchema>;
+export type CheckPromoQuery = z.infer<typeof checkPromoQuerySchema>;
+export type ReferralQuery = z.infer<typeof referralQuerySchema>;
+export type GrantReferralBody = z.infer<typeof grantReferralSchema>;
+export type InactiveQuery = z.infer<typeof inactiveQuerySchema>;
+export type CreateLockersBody = z.infer<typeof createLockersSchema>;
+export type UpdateLockerBody = z.infer<typeof updateLockerSchema>;
+export type AssignLockerBody = z.infer<typeof assignLockerSchema>;
+export type SupplementProfitQuery = z.infer<typeof supplementProfitQuerySchema>;

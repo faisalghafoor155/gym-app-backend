@@ -3,7 +3,8 @@
 import prisma from '../db.js';
 import { canWhatsApp } from './phone.js';
 import { planFor, planHasFeature } from './subscription.js';
-import { sendWhatsApp, templates, whatsappEnabled } from './whatsapp.js';
+import { templates } from './whatsapp.js';
+import { messagingEnabled, sendMemberMessage } from './messaging.js';
 
 /**
  * The messages that follow something happening, rather than something being
@@ -39,7 +40,7 @@ const reachable = async (
   gymId: string,
   member: { phone: string | null; whatsappOptOut: boolean },
 ): Promise<boolean> => {
-  if (!whatsappEnabled) return false;
+  if (!messagingEnabled()) return false;
   if (member.whatsappOptOut || !canWhatsApp(member.phone)) return false;
   return planHasFeature(await planFor(gymId), 'whatsapp');
 };
@@ -83,7 +84,7 @@ export const notifyWelcome = async (
 ): Promise<void> => {
   try {
     if (!(await reachable(gymId, member))) return;
-    await sendWhatsApp({
+    await sendMemberMessage({
       to: member.phone!,
       ...templates.welcome(member.name, await gymName(gymId), member.memberNo),
     });
@@ -110,7 +111,7 @@ export const notifyPaymentReceipt = async (
 ): Promise<void> => {
   try {
     if (!(await reachable(gymId, member))) return;
-    await sendWhatsApp({
+    await sendMemberMessage({
       to: member.phone!,
       ...templates.paymentReceipt(
         member.name,

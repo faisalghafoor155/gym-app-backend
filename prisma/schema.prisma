@@ -146,6 +146,15 @@ model Gym {
   /// Zero means the gym has no fixed joining fee and the field starts blank.
   joiningFee Decimal @default(0.00) @db.Decimal(10, 2)
 
+  /// Free days a member earns for each friend who joins on their referral,
+  /// added to their membership when the desk grants the reward. Zero means the
+  /// gym tracks referrals but rewards them some other way (a shaker, a shirt).
+  referralRewardDays Int @default(0)
+
+  /// How many days without a check-in before a member shows on the inactive
+  /// list. The page can ask for another number; this is where it starts.
+  inactivityDays Int @default(10)
+
   /// Where members are told to send money, per channel — "0300-1234567" for a
   /// wallet, "Meezan Bank, Faisal Ghafoor, PK00MEZN0001234567890123" for a
   /// bank.
@@ -188,8 +197,10 @@ model Gym {
   paymentIntents  PaymentIntent[]
   expenses        Expense[]
   fingerprints    FingerprintTemplate[]
-  leads           Lead[]
   measurements    MemberMeasurement[]
+  referralRewards ReferralReward[]
+  promoCodes      PromoCode[]
+  lockers         Locker[]
 
   /// What this gym pays *us*, as opposed to everything above, which is what
   /// its members pay it. Optional because a gym is only given a billing row
@@ -288,7 +299,6 @@ model User {
   member               Member?             @relation(fields: [memberId], references: [id])
   recordedPayments     Payment[]           @relation("PaymentRecordedBy")
   recordedExpenses     Expense[]           @relation("ExpenseRecordedBy")
-  createdLeads         Lead[]              @relation("LeadCreatedBy")
   recordedMeasurements MemberMeasurement[] @relation("MeasurementRecordedBy")
 
   @@index([gymId])
@@ -338,6 +348,10 @@ model Member {
   /// opting out of both.
   whatsappOptOut Boolean @default(false)
 
+  /// The member who brought this one in. `SetNull` so deleting the referrer
+  /// does not delete the people they referred.
+  referredById String?
+
   status    String   @default("active")
   createdAt DateTime @default(now())
 
@@ -356,8 +370,13 @@ model Member {
   paymentIntents PaymentIntent[]
   fingerprint    FingerprintTemplate?
   measurements   MemberMeasurement[]
-  /// The enquiry this member was converted from, when there was one.
-  lead           Lead?
+
+  referredBy       Member?           @relation("Referrals", fields: [referredById], references: [id], onDelete: SetNull)
+  referrals        Member[]          @relation("Referrals")
+  referralRewards  ReferralReward[]  @relation("RewardReferrer")
+  referredReward   ReferralReward?   @relation("RewardReferred")
+  promoRedemptions PromoRedemption[]
+  locker           Locker?
 
   @@unique([gymId, memberNo])
   @@index([gymId])
@@ -426,11 +445,12 @@ model Membership {
 
   createdAt DateTime @default(now())
 
-  gym      Gym                @relation(fields: [gymId], references: [id])
-  member   Member             @relation(fields: [memberId], references: [id])
-  plan     MembershipPlan     @relation(fields: [planId], references: [id])
-  payments Payment[]
-  freezes  MembershipFreeze[]
+  gym             Gym                @relation(fields: [gymId], references: [id])
+  member          Member             @relation(fields: [memberId], references: [id])
+  plan            MembershipPlan     @relation(fields: [planId], references: [id])
+  payments        Payment[]
+  freezes         MembershipFreeze[]
+  promoRedemption PromoRedemption?
 
   @@index([gymId])
   @@index([memberId])
@@ -776,66 +796,6 @@ model GreetingLog {
   @@index([gymId, createdAt])
 }
 
-/// Where an enquiry has got to.
-enum LeadStatus {
-  /// Asked, and nobody has followed up yet.
-  new
-  /// Somebody has called or messaged them back.
-  contacted
-  /// Came in for a trial session.
-  trial
-  /// Joined. `convertedMemberId` says as whom.
-  converted
-  /// Said no, or stopped answering.
-  lost
-}
-
-/// Somebody who asked about the gym but has not joined.
-///
-/// Walk-ins and phone enquiries were the revenue nobody wrote down: a person
-/// asks the price on Monday, is told to come back, and by Friday nobody
-/// remembers they existed. This is the list the desk works from to call them
-/// back.
-model Lead {
-  id    String @id @default(uuid())
-  gymId String
-
-  name  String
-  phone String?
-
-  /// How they got in touch — walk-in, call, whatsapp, referral, social.
-  /// Free text like `Expense.category`: the client offers the common ones,
-  /// and a gym that advertises somewhere new is not forced into "other".
-  source   String  @default("walk-in")
-  /// What they asked about, in the desk's words: "weight loss, evening batch".
-  interest String?
-  notes    String?
-
-  status     LeadStatus @default(new)
-  /// When somebody should get back to them. Null means nobody has decided.
-  followUpOn DateTime?
-
-  /// The member this enquiry became. Unique because one person joins once;
-  /// `SetNull` because deleting the member must not delete the record of how
-  /// they found the gym.
-  convertedMemberId String?   @unique
-  convertedAt       DateTime?
-
-  /// Who wrote it down. `SetNull` for the same reason Payment uses it.
-  createdById String?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  gym             Gym     @relation(fields: [gymId], references: [id])
-  convertedMember Member? @relation(fields: [convertedMemberId], references: [id], onDelete: SetNull)
-  createdBy       User?   @relation("LeadCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
-
-  @@index([gymId, status])
-  /// Serves "who should we call today".
-  @@index([gymId, followUpOn])
-}
-
 /// One weigh-in: a member's body measurements on a given day.
 ///
 /// Every number is optional. A member stepping on the scale has a weight and
@@ -894,6 +854,12 @@ model Supplement {
   /// both of which leave a row behind — a stock number nobody can explain is
   /// a stock number nobody trusts.
   stock       Int      @default(0)
+  /// What the gym pays the supplier per unit. Optional: profit is reported
+  /// only for products whose cost is known, never guessed.
+  costPrice   Decimal? @db.Decimal(10, 2)
+  /// Stock at or below this shows as running low. Per product, because five
+  /// tubs of whey and five sachets of pre-workout are not the same warning.
+  lowStockAt  Int      @default(5)
   createdAt   DateTime @default(now())
 
   gym   Gym              @relation(fields: [gymId], references: [id])
@@ -922,10 +888,14 @@ model SupplementSale {
   quantity  Int
   /// The price per unit at the moment of sale, snapshotted so a later price
   /// change cannot rewrite what somebody was charged.
-  unitPrice Decimal @db.Decimal(10, 2)
+  unitPrice Decimal  @db.Decimal(10, 2)
   /// quantity x unitPrice, stored rather than derived so a report never has to
   /// recompute money it is only reading.
-  total     Decimal @db.Decimal(10, 2)
+  total     Decimal  @db.Decimal(10, 2)
+  /// The product's cost price at the moment of sale, snapshotted for the same
+  /// reason the price is: changing a cost later must not rewrite old profit.
+  /// Null when no cost was recorded then.
+  unitCost  Decimal? @db.Decimal(10, 2)
 
   /// The payment this sale produced, when it was made to a member. Walk-ins
   /// have no member to hang a Payment on, so this stays null for them.
@@ -1324,4 +1294,125 @@ model SubscriptionInvoice {
   @@index([subscriptionId])
   /// Serves the sweep that chases and suspends on overdue invoices.
   @@index([status, dueDate])
+}
+
+/// Where a referral reward has got to.
+enum ReferralRewardStatus {
+  /// The friend joined; the referrer has not been given anything yet.
+  pending
+  /// Given — free days added, or something handed over at the desk.
+  granted
+  /// Decided against (the friend left in the first week, say).
+  cancelled
+}
+
+/// One friend brought in by a member, and the reward it earned them.
+///
+/// A row per referral rather than a counter on the member, so the history
+/// answers "who did Ali bring in, and what did he get for it" — and so a
+/// reward is granted once, by somebody, on a date, rather than inferred.
+model ReferralReward {
+  id         String @id @default(uuid())
+  gymId      String
+  referrerId String
+  /// The friend who joined. Unique: one person is referred once.
+  referredId String @unique
+
+  status     ReferralRewardStatus @default(pending)
+  /// Free days to add when granted, copied from the gym's setting when the
+  /// friend joined so changing the setting later does not reprice old ones.
+  rewardDays Int                  @default(0)
+  /// What was actually given, in the desk's words, when it was not days.
+  note       String?
+
+  /// The referrer's membership the days went onto, once granted.
+  membershipId String?
+  grantedAt    DateTime?
+  grantedById  String?
+
+  createdAt DateTime @default(now())
+
+  gym      Gym    @relation(fields: [gymId], references: [id])
+  referrer Member @relation("RewardReferrer", fields: [referrerId], references: [id], onDelete: Cascade)
+  referred Member @relation("RewardReferred", fields: [referredId], references: [id], onDelete: Cascade)
+
+  @@index([gymId, status])
+  @@index([referrerId])
+}
+
+/// Whether a promo code takes off a share of the price or a fixed sum.
+enum PromoKind {
+  percent
+  fixed
+}
+
+/// A discount the desk can apply when selling a membership — family, student,
+/// Eid. Applied on the server, so the code decides the price rather than
+/// whatever the desk typed.
+model PromoCode {
+  id    String @id @default(uuid())
+  gymId String
+
+  /// Stored upper-case; matched without regard to case.
+  code        String
+  description String?
+  kind        PromoKind
+  /// Percent off (1–100) or rupees off, by `kind`.
+  value       Decimal   @db.Decimal(10, 2)
+
+  validFrom  DateTime?
+  validUntil DateTime?
+  /// Null for unlimited.
+  maxUses    Int?
+  usedCount  Int       @default(0)
+  isActive   Boolean   @default(true)
+
+  createdAt DateTime @default(now())
+
+  gym         Gym               @relation(fields: [gymId], references: [id])
+  redemptions PromoRedemption[]
+
+  @@unique([gymId, code])
+}
+
+/// One use of a promo code: which membership it discounted, and by how much.
+model PromoRedemption {
+  id           String  @id @default(uuid())
+  gymId        String
+  promoCodeId  String
+  memberId     String
+  /// Unique: a membership is discounted by one code at most.
+  membershipId String  @unique
+  discount     Decimal @db.Decimal(10, 2)
+
+  createdAt DateTime @default(now())
+
+  promoCode  PromoCode  @relation(fields: [promoCodeId], references: [id], onDelete: Cascade)
+  member     Member     @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  membership Membership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+
+  @@index([gymId, createdAt])
+  @@index([promoCodeId])
+}
+
+/// A locker the gym rents or lends to members.
+model Locker {
+  id         String    @id @default(uuid())
+  gymId      String
+  /// What is painted on the door — "12", "A-3".
+  number     String
+  /// Where it is, when the gym has more than one bank of them.
+  location   String?
+  /// Who holds it. Unique: one locker per member, so "which is Ali's" has one
+  /// answer. `SetNull` so deleting a member frees their locker.
+  memberId   String?   @unique
+  assignedAt DateTime?
+  notes      String?
+
+  createdAt DateTime @default(now())
+
+  gym    Gym     @relation(fields: [gymId], references: [id])
+  member Member? @relation(fields: [memberId], references: [id], onDelete: SetNull)
+
+  @@unique([gymId, number])
 }

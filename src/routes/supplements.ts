@@ -15,7 +15,9 @@ import {
   restockSupplementSchema,
   salesReportQuerySchema,
   supplementQuerySchema,
+  supplementProfitQuerySchema,
 } from "../schemas.js";
+import { lowStock, profit } from "../controllers/supplementStockController.js";
 import {
   getAll,
   create,
@@ -47,6 +49,15 @@ router.get(
   validate(salesReportQuerySchema, "query"),
   authed(salesReport),
 );
+// Profit per product is the books, so it is the owner's like the sales report.
+router.get(
+  "/profit",
+  requireOwner,
+  validate(supplementProfitQuerySchema, "query"),
+  authed(profit),
+);
+// Running low is everyone's business — whoever is at the counter can reorder.
+router.get("/low-stock", authed(lowStock));
 
 router.get("/", validate(supplementQuerySchema, "query"), authed(getAll));
 router.post(

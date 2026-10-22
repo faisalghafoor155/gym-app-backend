@@ -127,6 +127,7 @@ export const updateMyProfile = async (
       email?: string | null;
       address?: string | null;
       emergencyContact?: string | null;
+      dateOfBirth?: Date | null;
     }
   >,
   res: Response,
@@ -139,13 +140,17 @@ export const updateMyProfile = async (
   }
 
   try {
-    const { phone, email, address, emergencyContact } = req.body;
+    const { phone, email, address, emergencyContact, dateOfBirth } = req.body;
     const data: {
       phone?: string | null;
       email?: string | null;
       address?: string | null;
       emergencyContact?: string | null;
+      dateOfBirth?: Date | null;
     } = {};
+
+    // Already a validated Date (or null to clear) — the schema did the work.
+    if (dateOfBirth !== undefined) data.dateOfBirth = dateOfBirth;
 
     if (phone !== undefined)
       data.phone = phone ? String(phone).trim() || null : null;

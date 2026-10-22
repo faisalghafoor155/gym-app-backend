@@ -8,7 +8,7 @@ import { api, resetDb, makeGym, addMember, addMembership, addPlan, addUser } fro
 
 /**
  * The features that keep members coming back and money coming in: freezing a
- * membership, working enquiries, part-payments, weigh-ins and greetings.
+ * membership, part-payments, weigh-ins and greetings.
  */
 
 beforeEach(resetDb);
@@ -78,60 +78,6 @@ describe("membership freeze", () => {
     expect(after.expiryDate.getTime()).toBe(original.expiryDate.getTime());
     const row = await prisma.membershipFreeze.findFirstOrThrow({ where: { membershipId: ms.id } });
     expect(row.days).toBe(0);
-  });
-});
-
-describe("leads", () => {
-  it("lists due follow-ups and the open set, and converts a lead once", async () => {
-    const owner = await makeGym();
-    const create = (body: Record<string, unknown>) =>
-      api().post("/api/leads").set("Cookie", owner.cookie).send(body);
-
-    const due = await create({ name: "Ali", phone: "03001112222", followUpOn: ymd(addDays(new Date(), -1)) });
-    await create({ name: "Sara", followUpOn: ymd(addDays(new Date(), 5)) });
-    const lost = await create({ name: "Bilal", status: "lost" });
-    expect(due.status).toBe(201);
-
-    const dueList = await api().get("/api/leads?due=true").set("Cookie", owner.cookie);
-    expect(dueList.body.data.map((l: { name: string }) => l.name)).toEqual(["Ali"]);
-    expect(dueList.body.counts.due).toBe(1);
-
-    const open = await api().get("/api/leads?status=open").set("Cookie", owner.cookie);
-    expect(open.body.data.map((l: { name: string }) => l.name).sort()).toEqual(["Ali", "Sara"]);
-    expect(open.body.data.some((l: { id: string }) => l.id === lost.body.id)).toBe(false);
-
-    const member = await addMember(owner.gymId, { name: "Ali" });
-    const converted = await api()
-      .post(`/api/leads/${due.body.id}/convert`)
-      .set("Cookie", owner.cookie)
-      .send({ memberId: member.id });
-    expect(converted.status).toBe(200);
-    expect(converted.body.status).toBe("converted");
-    expect(converted.body.convertedMember.id).toBe(member.id);
-
-    // The same member cannot be the outcome of a second enquiry.
-    const again = await api()
-      .post(`/api/leads/${lost.body.id}/convert`)
-      .set("Cookie", owner.cookie)
-      .send({ memberId: member.id });
-    expect(again.status).toBe(409);
-
-    // And a converted lead's status is fixed.
-    const reopen = await api()
-      .put(`/api/leads/${due.body.id}`)
-      .set("Cookie", owner.cookie)
-      .send({ status: "new" });
-    expect(reopen.status).toBe(400);
-  });
-
-  it("keeps another gym's leads out of reach", async () => {
-    const a = await makeGym();
-    const b = await makeGym();
-    const lead = await api().post("/api/leads").set("Cookie", a.cookie).send({ name: "Ali" });
-
-    const res = await api().put(`/api/leads/${lead.body.id}`).set("Cookie", b.cookie).send({ name: "x" });
-    expect(res.status).toBe(404);
-    expect((await api().get("/api/leads").set("Cookie", b.cookie)).body.total).toBe(0);
   });
 });
 
@@ -228,6 +174,25 @@ describe("member measurements", () => {
 });
 
 describe("GET /dashboard/celebrations", () => {
+  it("picks up a birthday the member entered themselves in the portal", async () => {
+    const owner = await makeGym();
+    const member = await addMember(owner.gymId, { name: "Self Entered" });
+    await addMembership(owner.gymId, member.id, { expiresInDays: 10 });
+    const self = await addUser(owner.gymId, { role: "member", memberId: member.id });
+    const today = startOfDay(new Date());
+    const ymd = `${today.getFullYear() - 25}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+
+    const future = await api().put("/api/me").set("Cookie", self.cookie).send({ dateOfBirth: "2999-01-01" });
+    expect(future.status).toBe(400);
+
+    const saved = await api().put("/api/me").set("Cookie", self.cookie).send({ dateOfBirth: ymd });
+    expect(saved.status).toBe(200);
+
+    const res = await api().get("/api/dashboard/celebrations").set("Cookie", owner.cookie);
+    expect(res.body.birthdays.map((b: { name: string }) => b.name)).toEqual(["Self Entered"]);
+    expect(res.body.birthdays[0].turning).toBe(25);
+  });
+
   it("lists today's birthdays for members still on the roster", async () => {
     const owner = await makeGym();
     const today = startOfDay(new Date());

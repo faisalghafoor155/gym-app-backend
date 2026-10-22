@@ -1,7 +1,8 @@
 import { Prisma, type GymPlan } from '@prisma/client';
 import prisma from '../db.js';
 import { mailEnabled, membershipExpiryMail, sendMail } from '../services/mail.js';
-import { sendWhatsApp, templates, whatsappEnabled } from '../services/whatsapp.js';
+import { templates } from '../services/whatsapp.js';
+import { messagingEnabled, sendMemberMessage } from '../services/messaging.js';
 import { canWhatsApp } from '../services/phone.js';
 import { planHasFeature } from '../services/subscription.js';
 
@@ -204,7 +205,7 @@ const notify = async (
     // sending, which is a different thing and must not colour the run's
     // failure count. Checked before the number so an unconfigured install
     // reports nothing about WhatsApp at all rather than a skip per member.
-    if (!whatsappEnabled) continue;
+    if (!messagingEnabled()) continue;
 
     // Nor is a gym whose plan does not include it. Same reasoning, one tier
     // up: the email above still went, so a free gym's members are still told
@@ -221,7 +222,7 @@ const notify = async (
       continue;
     }
 
-    const result = await sendWhatsApp({
+    const result = await sendMemberMessage({
       to: member.phone!,
       ...(kind === 'membershipExpiry'
         ? templates.membershipExpiry(member.name, m.gym.name, m.plan.name)

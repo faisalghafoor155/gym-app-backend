@@ -1,6 +1,7 @@
 import type { Response } from 'express';
 import prisma from '../db.js';
 import { audit } from '../services/audit.js';
+import { discountFor, findUsablePromo, PromoError, redeemPromo } from '../services/promo.js';
 import {
   activeFreeze, addDays, daysUntil, renewalStart, startOfDay, toView, withPlan,
 } from '../services/membership.js';
@@ -169,7 +170,7 @@ export const renew = async (
 ): Promise<void> => {
   const { id: memberId, membershipId } = req.params;
   const {
-    planId, amount, price, method, channel, reference, includeTrainer, trainerId, ptFee,
+    planId, amount, price, promoCode, method, channel, reference, includeTrainer, trainerId, ptFee,
   } = req.body;
   try {
     // Scoped by member and gym as well as id: a valid membership id belonging
@@ -226,6 +227,16 @@ export const renew = async (
         data: { status: 'superseded' },
       });
 
+      // A promo code sets the price on the server; otherwise it is the
+      // agreed price, or the list price.
+      const promo = promoCode ? await findUsablePromo(tx, req.gymId, promoCode) : null;
+      const listPrice = plan.price.toNumber();
+      const discount = promo ? discountFor(promo, listPrice) : 0;
+      const sold = promo ? listPrice - discount : (price ?? listPrice);
+      if (amount > sold) {
+        throw new PromoError('The amount paid cannot be more than the discounted price');
+      }
+
       const next = await tx.membership.create({
         data: {
           gymId: req.gymId,
@@ -236,10 +247,15 @@ export const renew = async (
           // Snapshotted so a later price change cannot rewrite what this
           // member was actually charged. A discount agreed at the counter is
           // the price; whatever of it was not paid today is owed.
-          pricePaid: price ?? plan.price,
+          pricePaid: sold,
         },
         include: withPlan,
       });
+      if (promo) {
+        await redeemPromo(tx, promo, {
+          gymId: req.gymId, memberId, membershipId: next.id, discount,
+        });
+      }
 
       // Written in the same transaction as the membership it bought. A renewal
       // that granted the days but lost the receipt would leave the gym's books
@@ -325,7 +341,8 @@ export const renew = async (
         planName: plan.name,
         startDate: start,
         expiryDate: expiry,
-        pricePaid: price ?? plan.price,
+        pricePaid: created.pricePaid,
+        ...(promoCode && { promoCode }),
         paymentId: payment.id,
         amountPaid: amount,
         method,
@@ -337,6 +354,10 @@ export const renew = async (
 
     res.status(201).json(toView(created));
   } catch (err) {
+    if (err instanceof PromoError) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
     console.error(err);
     res.status(500).json({ error: 'Server error' });
   }

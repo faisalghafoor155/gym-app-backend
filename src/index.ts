@@ -48,7 +48,9 @@ import payoutsRoutes from "./routes/payouts.js";
 import subscriptionRoutes from "./routes/subscription.js";
 import billingRoutes from "./routes/billing.js";
 import aiRoutes from "./routes/ai.js";
-import leadsRoutes from "./routes/leads.js";
+import promoCodesRoutes from "./routes/promoCodes.js";
+import referralsRoutes from "./routes/referrals.js";
+import lockersRoutes from "./routes/lockers.js";
 import { hasLiveGateway } from "./services/gateways/index.js";
 import { hasPlatformGateway } from "./services/gateways/platform.js";
 import { biometricKeyStatus } from "./services/fingerprint/crypto.js";
@@ -355,7 +357,9 @@ app.use("/api/payouts", payoutsRoutes);
 app.use("/api/subscription", subscriptionRoutes);
 app.use("/api/billing", billingRoutes);
 app.use("/api/ai", aiRoutes);
-app.use("/api/leads", leadsRoutes);
+app.use("/api/promo-codes", promoCodesRoutes);
+app.use("/api/referrals", referralsRoutes);
+app.use("/api/lockers", lockersRoutes);
 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });

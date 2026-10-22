@@ -4,7 +4,8 @@ import { membershipBalances, type MembershipBalance } from '../services/balances
 import { addDays, LAPSED_AFTER_DAYS, startOfDay } from '../services/membership.js';
 import { canWhatsApp } from '../services/phone.js';
 import { planHasFeature } from '../services/subscription.js';
-import { sendWhatsApp, templates, whatsappEnabled } from '../services/whatsapp.js';
+import { templates } from '../services/whatsapp.js';
+import { messagingEnabled, sendMemberMessage } from '../services/messaging.js';
 
 /**
  * Reminds members who still owe part of their membership fee.
@@ -79,7 +80,7 @@ export const runDuesReminders = async (now: Date = new Date()): Promise<DuesRun>
   run.owing = balances.length;
 
   // Not configured, or configured off, is not failing to send.
-  if (EVERY_DAYS <= 0 || !whatsappEnabled || balances.length === 0) return run;
+  if (EVERY_DAYS <= 0 || !messagingEnabled() || balances.length === 0) return run;
 
   // One query for "who was reminded recently", rather than one per member.
   const recent = await prisma.reminderLog.findMany({
@@ -110,7 +111,7 @@ export const runDuesReminders = async (now: Date = new Date()): Promise<DuesRun>
       continue;
     }
 
-    const result = await sendWhatsApp({
+    const result = await sendMemberMessage({
       to: b.member.phone!,
       ...templates.duesReminder(
         b.member.name,

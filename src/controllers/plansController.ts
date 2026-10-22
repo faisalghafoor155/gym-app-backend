@@ -1,5 +1,6 @@
 import type { Response } from 'express';
 import prisma from '../db.js';
+import { audit } from '../services/audit.js';
 import type { AuthedRequest } from '../types.js';
 import type { CreatePlanBody, AssignPlanBody, IdParam } from '../schemas.js';
 
@@ -129,3 +130,46 @@ export const getMemberPlans = async (
     res.status(500).json({ error: 'Server error' });
   }
 };
+
+/**
+ * Removes a workout or diet plan. Members it was assigned to keep their
+ * assignment row with that half emptied — the relation is optional, so the
+ * database sets it to null rather than refusing.
+ */
+const removePlan = (kind: 'workout' | 'diet') => async (
+  req: AuthedRequest<IdParam>,
+  res: Response,
+): Promise<void> => {
+  const { id } = req.params;
+  try {
+    const plan = kind === 'workout'
+      ? await prisma.workoutPlan.findFirst({ where: { id, gymId: req.gymId } })
+      : await prisma.dietPlan.findFirst({ where: { id, gymId: req.gymId } });
+    if (!plan) {
+      res.status(404).json({ error: 'Plan not found' });
+      return;
+    }
+    await prisma.$transaction(async (tx) => {
+      await tx.memberPlan.updateMany({
+        where: kind === 'workout' ? { workoutPlanId: id } : { dietPlanId: id },
+        data: kind === 'workout' ? { workoutPlanId: null } : { dietPlanId: null },
+      });
+      if (kind === 'workout') await tx.workoutPlan.delete({ where: { id } });
+      else await tx.dietPlan.delete({ where: { id } });
+    });
+    await audit(req, {
+      action: `plan.${kind}.delete`,
+      entity: 'plan',
+      entityId: id,
+      entityLabel: plan.name,
+      before: { name: plan.name },
+    });
+    res.status(204).end();
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+};
+
+export const deleteWorkoutPlan = removePlan('workout');
+export const deleteDietPlan = removePlan('diet');

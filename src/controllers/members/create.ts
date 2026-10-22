@@ -16,6 +16,7 @@ import { findDuplicateMember } from "../../services/memberDuplicate.js";
 import { buildPtFeeCharge, trainerFeeSelect } from "../../services/trainerFee.js";
 import { notifyWelcome } from "../../services/memberNotifications.js";
 import { planErrorResponse, PlanLimitError } from "../../services/subscription.js";
+import { discountFor, findUsablePromo, PromoError, redeemPromo } from "../../services/promo.js";
 import type { AuthedRequest } from "../../types.js";
 import type { CreateMemberBody } from "../../schemas.js";
 import {
@@ -27,6 +28,9 @@ import {
   selectMember,
   UnknownTrainerError,
 } from "./shared.js";
+
+/** Thrown when the referrer named does not belong to this gym. */
+class UnknownReferrerError extends Error {}
 
 /**
  * Registers a member, optionally selling them a membership in the same breath
@@ -55,6 +59,8 @@ export const create = async (
     feeMethod,
     feeChannel,
     feeReference,
+    referredById,
+    promoCode,
     ...fields
   } = req.body;
   try {
@@ -120,8 +126,18 @@ export const create = async (
       const gym = await tx.gym.update({
         where: { id: req.gymId },
         data: { memberSeq: { increment: 1 } },
-        select: { memberSeq: true, defaultPtFee: true },
+        select: { memberSeq: true, defaultPtFee: true, referralRewardDays: true },
       });
+
+      // Scoped by gym: a member id from elsewhere must not become a referrer
+      // here and earn a reward from a gym they do not belong to.
+      if (referredById) {
+        const referrer = await tx.member.findFirst({
+          where: { id: referredById, gymId: req.gymId },
+          select: { id: true },
+        });
+        if (!referrer) throw new UnknownReferrerError();
+      }
 
       const created = await tx.member.create({
         data: {
@@ -129,15 +145,36 @@ export const create = async (
           memberNo: formatMemberNo(gym.memberSeq),
           ...fields,
           ...photoData,
+          referredById: referredById ?? null,
         },
         select: memberFields,
       });
+
+      // The reward is decided now, at the gym's current rate, and granted
+      // later by somebody at the desk — see the referrals controller.
+      if (referredById) {
+        await tx.referralReward.create({
+          data: {
+            gymId: req.gymId,
+            referrerId: referredById,
+            referredId: created.id,
+            rewardDays: gym.referralRewardDays,
+          },
+        });
+      }
 
       let membershipId: string | null = null;
       if (planId) {
         const plan = await tx.membershipPlan.findUniqueOrThrow({
           where: { id: planId },
         });
+        // The code decides the price, here, inside the sale — never a
+        // figure the desk typed.
+        const promo = promoCode
+          ? await findUsablePromo(tx, req.gymId, promoCode)
+          : null;
+        const listPrice = plan.price.toNumber();
+        const discount = promo ? discountFor(promo, listPrice) : 0;
         const start = startDate ?? new Date();
         const expiry = addDays(start, plan.durationDays);
 
@@ -148,11 +185,16 @@ export const create = async (
             planId: plan.id,
             startDate: start,
             expiryDate: expiry,
-            pricePaid: plan.price,
+            pricePaid: listPrice - discount,
           },
           select: { id: true },
         });
         membershipId = membership.id;
+        if (promo) {
+          await redeemPromo(tx, promo, {
+            gymId: req.gymId, memberId: created.id, membershipId, discount,
+          });
+        }
       }
 
       // The fee handed over at the counter, when one was. Linked to the
@@ -258,6 +300,14 @@ export const create = async (
     }
     if (err instanceof UnknownTrainerError) {
       res.status(404).json({ error: "Trainer not found" });
+      return;
+    }
+    if (err instanceof UnknownReferrerError) {
+      res.status(404).json({ error: "Referring member not found" });
+      return;
+    }
+    if (err instanceof PromoError) {
+      res.status(400).json({ error: err.message });
       return;
     }
     console.error(err);

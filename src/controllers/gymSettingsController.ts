@@ -25,6 +25,8 @@ const gymSettingsFields = {
   easypaisaAccount: true,
   jazzcashAccount: true,
   bankAccount: true,
+  referralRewardDays: true,
+  inactivityDays: true,
 } as const;
 
 /** What an owner can change here, and what a change is worth logging. */
@@ -39,6 +41,8 @@ const AUDITED_SETTINGS = [
   'easypaisaAccount',
   'jazzcashAccount',
   'bankAccount',
+  'referralRewardDays',
+  'inactivityDays',
 ] as const;
 
 export const get = async (req: AuthedRequest, res: Response): Promise<void> => {
@@ -73,6 +77,8 @@ export const update = async (
     easypaisaAccount,
     jazzcashAccount,
     bankAccount,
+    referralRewardDays,
+    inactivityDays,
   } = req.body;
   try {
     const before = await prisma.gym.findUniqueOrThrow({
@@ -102,6 +108,8 @@ export const update = async (
         ...(easypaisaAccount !== undefined && { easypaisaAccount }),
         ...(jazzcashAccount !== undefined && { jazzcashAccount }),
         ...(bankAccount !== undefined && { bankAccount }),
+        ...(referralRewardDays !== undefined && { referralRewardDays }),
+        ...(inactivityDays !== undefined && { inactivityDays }),
       },
       select: gymSettingsFields,
     });
