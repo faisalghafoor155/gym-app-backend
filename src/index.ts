@@ -445,7 +445,12 @@ export default app;
 // must not bind a port, or a second import would fight the first for it. The
 // same applies to the scheduler: a background job firing mid-suite would write
 // rows no test asked for.
-if (process.env.NODE_ENV !== "test") {
+//
+// Vercel is the other importer: it mounts the default export as a function and
+// owns the port itself. Its instances are frozen between requests, so node-cron
+// would fire at random or not at all, and process.exit would kill an instance
+// still serving other requests — none of this block belongs there.
+if (process.env.NODE_ENV !== "test" && !process.env.VERCEL) {
   const PORT = Number(process.env.PORT ?? 5000);
   app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
