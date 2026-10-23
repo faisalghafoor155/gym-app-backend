@@ -64,6 +64,7 @@ export const getSummary = async (
     type Bucket = {
       membership: Prisma.Decimal;
       supplement: Prisma.Decimal;
+      locker: Prisma.Decimal;
       other: Prisma.Decimal;
       total: Prisma.Decimal;
       count: number;
@@ -71,6 +72,7 @@ export const getSummary = async (
     const empty = (): Bucket => ({
       membership: new Prisma.Decimal(0),
       supplement: new Prisma.Decimal(0),
+      locker: new Prisma.Decimal(0),
       other: new Prisma.Decimal(0),
       total: new Prisma.Decimal(0),
       count: 0,
@@ -106,6 +108,7 @@ export const getSummary = async (
       }),
       membership: b.membership.toNumber(),
       supplement: b.supplement.toNumber(),
+      locker: b.locker.toNumber(),
       other: b.other.toNumber(),
       total: b.total.toNumber(),
       count: b.count,

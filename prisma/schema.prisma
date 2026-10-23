@@ -33,6 +33,8 @@ enum StaffPermission {
 enum PaymentType {
   membership
   supplement
+  /// A locker rented on its own, outside a plan that already includes one.
+  locker
   other
 }
 
@@ -400,6 +402,10 @@ model MembershipPlan {
   /// how prices are actually quoted.
   price        Decimal  @db.Decimal(10, 2)
   durationDays Int
+  /// What the plan covers beyond the gym floor. A plan with a locker means a
+  /// locker handed to its members carries no separate fee.
+  includesCardio Boolean @default(false)
+  includesLocker Boolean @default(false)
   /// Retired plans stay for the memberships already sold under them; they
   /// just stop being offered. Plans are never hard-deleted.
   isActive     Boolean  @default(true)

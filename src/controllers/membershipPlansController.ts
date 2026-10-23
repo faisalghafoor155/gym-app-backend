@@ -47,10 +47,18 @@ export const create = async (
   req: AuthedRequest<Record<string, string>, unknown, CreateMembershipPlanBody>,
   res: Response,
 ): Promise<void> => {
-  const { name, price, durationDays, isActive } = req.body;
+  const { name, price, durationDays, includesCardio, includesLocker, isActive } = req.body;
   try {
     const plan = await prisma.membershipPlan.create({
-      data: { gymId: req.gymId, name, price, durationDays, isActive: isActive ?? true },
+      data: {
+        gymId: req.gymId,
+        name,
+        price,
+        durationDays,
+        includesCardio: includesCardio ?? false,
+        includesLocker: includesLocker ?? false,
+        isActive: isActive ?? true,
+      },
     });
 
     await audit(req, {
@@ -58,7 +66,7 @@ export const create = async (
       entity: 'membershipPlan',
       entityId: plan.id,
       entityLabel: plan.name,
-      after: { name, price, durationDays },
+      after: { name, price, durationDays, includesCardio, includesLocker },
     });
 
     res.status(201).json(withMoney(plan, 'price'));
@@ -68,7 +76,9 @@ export const create = async (
   }
 };
 
-const AUDITED_PLAN_FIELDS = ['name', 'price', 'durationDays', 'isActive'] as const;
+const AUDITED_PLAN_FIELDS = [
+  'name', 'price', 'durationDays', 'includesCardio', 'includesLocker', 'isActive',
+] as const;
 
 /**
  * Edits the price list. Memberships already sold keep the price and duration
@@ -80,7 +90,7 @@ export const update = async (
   res: Response,
 ): Promise<void> => {
   const { id } = req.params;
-  const { name, price, durationDays, isActive } = req.body;
+  const { name, price, durationDays, includesCardio, includesLocker, isActive } = req.body;
   try {
     const existing = await prisma.membershipPlan.findFirst({
       where: { id, gymId: req.gymId },
@@ -96,6 +106,8 @@ export const update = async (
         ...(name && { name }),
         ...(price !== undefined && { price }),
         ...(durationDays !== undefined && { durationDays }),
+        ...(includesCardio !== undefined && { includesCardio }),
+        ...(includesLocker !== undefined && { includesLocker }),
         ...(isActive !== undefined && { isActive }),
       },
     });

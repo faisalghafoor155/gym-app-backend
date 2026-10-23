@@ -26,7 +26,11 @@ const holder = {
       where: currentMembershipWhere,
       orderBy: { startDate: 'desc' as const },
       take: 1,
-      select: { expiryDate: true, status: true, plan: { select: { name: true } } },
+      select: {
+        expiryDate: true,
+        status: true,
+        plan: { select: { name: true, includesLocker: true } },
+      },
     },
   },
 } as const;
@@ -53,6 +57,7 @@ const toView = (l: LockerRow, now: Date) => {
           memberNo: l.member.memberNo,
           phone: l.member.phone,
           planName: ms?.plan.name ?? null,
+          planIncludesLocker: ms?.plan.includesLocker ?? false,
           expiryDate: ms?.expiryDate ?? null,
           daysLeft,
         }
@@ -182,13 +187,24 @@ export const assign = async (
   req: AuthedRequest<IdParam, unknown, AssignLockerBody>,
   res: Response,
 ): Promise<void> => {
-  const { memberId, notes } = req.body;
+  const { memberId, notes, feeAmount, feeMethod, channel, reference } = req.body;
   try {
     const [locker, member] = await Promise.all([
       find(req.gymId, req.params.id),
       prisma.member.findFirst({
         where: { id: memberId, gymId: req.gymId },
-        select: { id: true, name: true, memberNo: true, locker: { select: { number: true } } },
+        select: {
+          id: true,
+          name: true,
+          memberNo: true,
+          locker: { select: { number: true } },
+          memberships: {
+            where: currentMembershipWhere,
+            orderBy: { startDate: 'desc' },
+            take: 1,
+            select: { plan: { select: { includesLocker: true } } },
+          },
+        },
       }),
     ]);
     if (!locker) {
@@ -207,19 +223,51 @@ export const assign = async (
       res.status(400).json({ error: `${member.name} already has locker ${member.locker.number}` });
       return;
     }
-    const updated = await prisma.locker.update({
-      where: { id: locker.id },
-      data: { memberId: member.id, assignedAt: new Date(), ...(notes !== undefined && { notes }) },
-      include: { member: holder },
+    // A plan that includes a locker has already been paid for it, so a fee
+    // here would charge the member twice for the same door.
+    const covered = member.memberships[0]?.plan.includesLocker ?? false;
+    const fee = !covered && feeAmount ? feeAmount : null;
+
+    // One transaction: a locker handed over with its fee lost, or a fee
+    // recorded for a locker someone else got first, is worse than neither.
+    const [updated, payment] = await prisma.$transaction(async tx => {
+      const assigned = await tx.locker.update({
+        where: { id: locker.id },
+        data: { memberId: member.id, assignedAt: new Date(), ...(notes !== undefined && { notes }) },
+        include: { member: holder },
+      });
+      const paid = fee
+        ? await tx.payment.create({
+            data: {
+              gymId: req.gymId,
+              memberId: member.id,
+              amount: fee,
+              type: 'locker',
+              method: feeMethod ?? 'cash',
+              channel: feeMethod === 'online' ? channel ?? null : null,
+              reference: reference ?? null,
+              notes: `Locker ${locker.number}`,
+              recordedById: req.userId,
+            },
+          })
+        : null;
+      return [assigned, paid] as const;
     });
     await audit(req, {
       action: 'locker.assign',
       entity: 'locker',
       entityId: locker.id,
       entityLabel: `Locker ${locker.number}`,
-      after: { memberId: member.id, memberNo: member.memberNo, name: member.name },
+      after: {
+        memberId: member.id,
+        memberNo: member.memberNo,
+        name: member.name,
+        ...(covered && { coveredByPlan: true }),
+        ...(payment && { paymentId: payment.id, fee }),
+      },
     });
-    res.json(toView(updated, new Date()));
+    // Said back so the desk knows whether money was taken, and why not.
+    res.json({ ...toView(updated, new Date()), coveredByPlan: covered, feeRecorded: !!payment });
   } catch (err) {
     // Two desks giving the same member a locker at once: the unique key on
     // memberId is what says no to the second.

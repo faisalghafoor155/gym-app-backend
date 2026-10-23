@@ -136,6 +136,7 @@ export const exportCsv = async (
     const paymentTypeLabels: { [key: string]: string } = {
       membership: "Membership",
       supplement: "Supplement",
+      locker: "Locker",
       other: "Other",
     };
 

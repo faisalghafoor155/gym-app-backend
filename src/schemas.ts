@@ -92,7 +92,7 @@ export const PAYMENT_METHODS = ["cash", "online"] as const;
  */
 export const PAYMENT_CHANNELS = ["easypaisa", "jazzcash", "bank"] as const;
 export const PAYMENT_STATUSES = ["paid", "due"] as const;
-export const PAYMENT_TYPES = ["membership", "supplement", "other"] as const;
+export const PAYMENT_TYPES = ["membership", "supplement", "locker", "other"] as const;
 export const SUPPLEMENT_CATEGORIES = [
   "protein",
   "creatine",
@@ -524,6 +524,8 @@ const planBase = {
     .int("must be a whole number")
     .min(1, "must be at least 1 day")
     .max(3650, "cannot be more than 10 years"),
+  includesCardio: z.boolean().optional(),
+  includesLocker: z.boolean().optional(),
   isActive: z.boolean().optional(),
 };
 
@@ -1662,10 +1664,25 @@ export const updateLockerSchema = z.object({
   notes: optionalText(300),
 });
 
-export const assignLockerSchema = z.object({
-  memberId: uuid,
-  notes: optionalText(300),
-});
+export const assignLockerSchema = z
+  .object({
+    memberId: uuid,
+    notes: optionalText(300),
+    /**
+     * The locker fee taken at the counter, if one was. Absent or blank means
+     * nothing changed hands — the locker is free, or covered by the plan.
+     */
+    feeAmount: z
+      .literal("")
+      .transform(() => null)
+      .or(money.refine((v) => v > 0, "must be greater than zero"))
+      .nullish(),
+    feeMethod: z
+      .enum(PAYMENT_METHODS, { error: "must be cash or online" })
+      .optional(),
+    ...paymentChannelFields,
+  })
+  .superRefine((data, ctx) => rejectChannelOnCash({ ...data, method: data.feeMethod }, ctx));
 
 // --- supplement profit -------------------------------------------------
 

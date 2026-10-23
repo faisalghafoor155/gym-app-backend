@@ -246,7 +246,7 @@ export const getStats = async (req: AuthedRequest, res: Response): Promise<void>
     // reconcile against their own books.
     const monthStart = startOfMonth(now);
     const monthRows = paymentRows.filter(p => p.paymentDate >= monthStart);
-    const byType = (t: 'membership' | 'supplement' | 'other'): number =>
+    const byType = (t: 'membership' | 'supplement' | 'locker' | 'other'): number =>
       sum(monthRows.filter(p => p.type === t).map(p => p.amount));
 
     /**
@@ -281,6 +281,7 @@ export const getStats = async (req: AuthedRequest, res: Response): Promise<void>
       to: now,
       membership: byType('membership'),
       supplement: byType('supplement'),
+      locker: byType('locker'),
       other: byType('other'),
       // Summed from the rows rather than from the three figures above, so a
       // payment type added later cannot silently drop out of the grand total.
