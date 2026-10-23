@@ -54,7 +54,7 @@ import lockersRoutes from "./routes/lockers.js";
 import { hasLiveGateway } from "./services/gateways/index.js";
 import { hasPlatformGateway } from "./services/gateways/platform.js";
 import { biometricKeyStatus } from "./services/fingerprint/crypto.js";
-import { mailEnabled } from "./services/mail.js";
+import { mailEnabled, verifyMail } from "./services/mail.js";
 import { startJobs } from "./jobs/index.js";
 
 // Fail loudly at boot rather than turning every login into a generic 500.
@@ -380,11 +380,14 @@ app.use("/api/promo-codes", promoCodesRoutes);
 app.use("/api/referrals", referralsRoutes);
 app.use("/api/lockers", lockersRoutes);
 
-app.get("/api/health", (_req, res) => {
+app.get("/api/health", async (req, res) => {
   // Whether mail is configured, and nothing about how. A dead transport is
   // otherwise invisible from outside — forgot-password answers identically
   // either way — and the startup warning sits in logs not everyone can open.
-  res.json({ status: "ok", mail: mailEnabled });
+  // `?check=mail` goes further and logs in to the transport, which is what
+  // tells a host that blocks SMTP apart from one that merely has it set.
+  const mailCheck = req.query.check === "mail" ? await verifyMail() : undefined;
+  res.json({ status: "ok", mail: mailEnabled, ...(mailCheck && { mailCheck }) });
 });
 
 // Single-origin deployments (Render, and anywhere else without a separate

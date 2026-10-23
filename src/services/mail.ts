@@ -135,6 +135,25 @@ export const sendMail = async (mail: Mail): Promise<boolean> => {
   }
 };
 
+/**
+ * Whether the configured transport will accept us, without sending anything.
+ *
+ * `sendMail` swallows failures by design, so a host that blocks SMTP or a
+ * revoked app password looks exactly like a mail that was sent. This is the
+ * outside check: an error code, never the credentials.
+ */
+export const verifyMail = async (): Promise<{ ok: boolean; error?: string }> => {
+  if (!mailEnabled) return { ok: false, error: 'not configured' };
+  if (resendKey) return { ok: true };
+  try {
+    await transporter!.verify();
+    return { ok: true };
+  } catch (err) {
+    const { code, responseCode } = err as { code?: string; responseCode?: number };
+    return { ok: false, error: [code, responseCode].filter(Boolean).join(' ') || 'unknown' };
+  }
+};
+
 /** Shared shell so the two mails look like they came from the same app. */
 const layout = (heading: string, body: string, link: string, label: string, footer: string) =>
   `<div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:480px">` +
