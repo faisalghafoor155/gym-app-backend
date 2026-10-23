@@ -58,15 +58,26 @@ import { mailEnabled } from "./services/mail.js";
 import { startJobs } from "./jobs/index.js";
 
 // Fail loudly at boot rather than turning every login into a generic 500.
+//
+// On Vercel an exit at import becomes FUNCTION_INVOCATION_FAILED, which says
+// nothing to whoever is reading the browser — and the logs that would say it
+// are not always to hand. There the problems are kept instead, and every API
+// request answers 503 with them (names and reasons, never values) until the
+// configuration is fixed and the project redeployed.
+const startupProblems: string[] = [];
+const fatal = (message: string): void => {
+  console.error(message);
+  if (!process.env.VERCEL) process.exit(1);
+  startupProblems.push(message);
+};
+
 for (const key of ["JWT_SECRET", "DATABASE_URL"] as const) {
   if (!process.env[key]) {
-    console.error(`Missing required environment variable: ${key}`);
-    process.exit(1);
+    fatal(`Missing required environment variable: ${key}`);
   }
 }
-if (process.env.JWT_SECRET!.length < 32) {
-  console.error("JWT_SECRET must be at least 32 characters");
-  process.exit(1);
+if ((process.env.JWT_SECRET ?? "").length < 32) {
+  fatal("JWT_SECRET must be at least 32 characters");
 }
 
 // Biometric templates are encrypted with this, and a missing key must stop the
@@ -75,8 +86,7 @@ if (process.env.JWT_SECRET!.length < 32) {
 // preceded it, not at the desk with a member's finger on the glass.
 const biometricKey = biometricKeyStatus();
 if (!biometricKey.ok) {
-  console.error(biometricKey.error);
-  process.exit(1);
+  fatal(biometricKey.error);
 }
 
 // Settings that are right for localhost and wrong the moment a member can
@@ -217,6 +227,15 @@ app.set(
 // Before the routes and before the body parser, so a request that is rejected
 // for being oversized is still logged and still carries an id to quote.
 app.use(requestLogger);
+
+if (startupProblems.length) {
+  app.use("/api", (_req, res) => {
+    res.status(503).json({
+      error: "Server is misconfigured",
+      problems: startupProblems,
+    });
+  });
+}
 
 // Helmet's default CSP carries `upgrade-insecure-requests`, and it sends HSTS.
 // Both assume TLS. On a deployment that is honestly plain http — the desktop
