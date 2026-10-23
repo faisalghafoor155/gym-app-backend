@@ -381,7 +381,10 @@ app.use("/api/referrals", referralsRoutes);
 app.use("/api/lockers", lockersRoutes);
 
 app.get("/api/health", (_req, res) => {
-  res.json({ status: "ok" });
+  // Whether mail is configured, and nothing about how. A dead transport is
+  // otherwise invisible from outside — forgot-password answers identically
+  // either way — and the startup warning sits in logs not everyone can open.
+  res.json({ status: "ok", mail: mailEnabled });
 });
 
 // Single-origin deployments (Render, and anywhere else without a separate
