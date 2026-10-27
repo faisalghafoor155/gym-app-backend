@@ -52,6 +52,7 @@ export const issueInvite = async (
   const link = `${appUrl()}/accept-invite?token=${token}`;
   const emailed = await sendMail({
     to: opts.email,
+    fromName: opts.gymName,
     ...inviteMail(link, INVITE_TTL_HOURS, opts.gymName, opts.role, opts.invitedBy),
   });
 

@@ -59,6 +59,7 @@ export const issueEmailVerification = async (
   const link = `${appUrl()}/verify-email?token=${token}`;
   const emailed = await sendMail({
     to: opts.email,
+    fromName: opts.gymName,
     ...verifyEmailMail(link, VERIFY_TTL_HOURS, opts.gymName, opts.name),
   });
 
