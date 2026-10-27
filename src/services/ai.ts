@@ -16,8 +16,13 @@ export interface FitnessAiContext {
   waterLiters?: number;
 }
 
+export type AiLanguage = 'en' | 'ur';
+
 export interface AiChatPayload {
   message: string;
+  /** The app's language toggle. Absent from older clients, which got Roman
+   *  Urdu, so that stays the default. */
+  lang?: AiLanguage;
   context?: FitnessAiContext;
   apiKey?: string;
   /** The member's logged weigh-ins, already written as prompt lines. Built on
@@ -25,17 +30,20 @@ export interface AiChatPayload {
   progress?: string;
 }
 
-const SYSTEM_PROMPT = `You are "GymPro AI", an elite Certified Sports Nutritionist, Strength Coach, and Master Bodybuilding Trainer.
+const systemPrompt = (lang: AiLanguage): string => `You are "GymPro AI", an elite Certified Sports Nutritionist, Strength Coach, and Master Bodybuilding Trainer.
 You have deep expertise in bodybuilding nutrition, calorie/macro science (TDEE, BMR, deficit, surplus), Pakistani & Desi foods (Roti, Daal, Chawal, Chicken Tikka, Dahi, Anday, Desi Ghee), modern supplements (Kevin Levrone Anabolic Mass, ON Serious Mass, MuscleMeds Carnivor Beef Mass, Whey Isolate, Creatine Monohydrate, Pre-workouts like C4, Psychotic), and strength training routines (Compound lifts, 5-day hypertrophy splits, sets, reps, progressive overload).
 
 Tone & Language:
-- Respond in clear, friendly Roman Urdu (or Urdu/English if preferred by user).
+- ${lang === 'en'
+    ? 'Respond only in clear, friendly English. Desi food names may stay as they are (roti, daal, dahi) with a short English gloss.'
+    : 'Respond only in clear, friendly Roman Urdu (Urdu written in English letters, never Urdu script). Common gym and English words may stay in English.'}
 - Be highly encouraging, practical, and scientifically accurate.
 - Always emphasize clean eating, avoiding dirty belly fat during bulking, proper hydration (at least 3.5 - 4.5 Liters), and smart supplement timing.
 - Structure answers with bullet points, bold headings, and clear dosages/timings so it's easy for gym lifters to read on mobile.`;
 
 export async function askFitnessAi(payload: AiChatPayload): Promise<string> {
-  const { message, context, apiKey: userKey, progress } = payload;
+  const { message, context, apiKey: userKey, progress, lang = 'ur' } = payload;
+  const SYSTEM_PROMPT = systemPrompt(lang);
   const geminiKey = userKey || process.env.GEMINI_API_KEY;
   const openaiKey = process.env.OPENAI_API_KEY;
 
@@ -140,10 +148,15 @@ Please provide a detailed, actionable, and structured recommendation for this li
   }
 
   // 3. Built-in Smart Expert AI Engine (Zero-key fallback)
-  return generateExpertFallbackResponse(message, context);
+  return generateExpertFallbackResponse(message, lang, context);
 }
 
-function generateExpertFallbackResponse(message: string, context?: FitnessAiContext): string {
+function generateExpertFallbackResponse(
+  message: string,
+  lang: AiLanguage,
+  context?: FitnessAiContext,
+): string {
+  const en = lang === 'en';
   const q = message.toLowerCase();
   const weight = context?.weightKg || 70;
   const calories = context?.targetCalories || 2400;
@@ -152,6 +165,49 @@ function generateExpertFallbackResponse(message: string, context?: FitnessAiCont
   const water = context?.waterLiters || 4.0;
 
   if (q.includes('plan') || q.includes('diet') || q.includes('full') || q.includes('chart') || q.includes('menu')) {
+    if (en) return `### 🏋️‍♂️ AI Custom Diet & Nutrition Plan (${weight}kg Bodyweight)
+
+**Daily Targets:**
+- 🔥 **Total Calories:** ${calories} kcal
+- 🥩 **Target Protein:** ${protein}g (${(protein / weight).toFixed(1)}g per kg bodyweight)
+- 💧 **Water Intake:** ${water} Liters
+
+---
+
+### 🍽️ Meal-by-Meal Schedule:
+
+1. **🌅 Breakfast (8:30 AM):**
+   - 4 boiled eggs (1 whole egg + 3 egg whites).
+   - 1 plain roti, or 1 cup oats cooked in 200ml milk.
+   - 6 almonds + 1 cup green tea.
+   - *Protein: ~28g | Calories: ~450 kcal*
+
+2. **🥤 Mid-Morning Shake (11:30 AM):**
+   - 1 scoop **${gainer.replace('_', ' ').toUpperCase()}** in 350ml water or skim milk.
+   - *Protein: ~25g | Calories: ~400 kcal*
+
+3. **☀️ Lunch (2:00 PM):**
+   - 150g chicken breast (tikka style or a low-ghee curry) / 1 cup white chickpeas.
+   - 1 cup boiled rice or 1-2 plain rotis.
+   - 1 bowl fresh yogurt + cucumber and tomato salad.
+   - *Protein: ~38g | Calories: ~550 kcal*
+
+4. **⚡ Pre-Workout Fuel (5:00 PM - 30 min before the gym):**
+   - 1 banana + 1 cup black coffee (no sugar) or 1 scoop C4/Psychotic.
+   - *Energy: quick glycogen refill & focus.*
+
+5. **🥤 Post-Workout Recovery (6:45 PM - Anabolic Window):**
+   - 1 scoop Mass Gainer / Whey + **5g Creatine Monohydrate** in cold water.
+   - *Protein: ~25g | Creatine pulls water straight into muscle cells.*
+
+6. **🌙 Dinner (9:00 PM):**
+   - 120g fish or chicken kebab / moong daal.
+   - 1 roti + a few drops of olive oil on the salad.
+   - *Protein: ~30g | Calories: ~450 kcal*
+
+---
+
+💡 **AI Coach Pro Tip:** While on creatine and a mass gainer, drink at least **${water} liters of water** every day so you don't bloat and digestion stays smooth!`;
     return `### 🏋️‍♂️ AI Custom Diet & Nutrition Plan (${weight}kg Bodyweight)
 
 **Daily Targets:**
@@ -198,6 +254,12 @@ function generateExpertFallbackResponse(message: string, context?: FitnessAiCont
   }
 
   if (q.includes('creatine') || q.includes('createne')) {
+    if (en) return `### ⚡ Creatine Monohydrate Protocol
+
+1. **Dosage:** **5 grams** a day (1 teaspoon). A loading phase (20g) is not needed at all.
+2. **Best Timing:** Take it right after your workout with your post-workout shake or mass gainer. With carbs, creatine absorbs about 60% faster.
+3. **Rest Days:** Mix it in water and drink it after breakfast.
+4. **Water Rule:** Creatine draws water into the muscles, so **4.0 liters of water** a day is a must, or you may get cramps or headaches.`;
     return `### ⚡ Creatine Monohydrate Protocol
 
 1. **Dosage:** Rozana **5 gram** (1 tea spoon). Loading phase (20g) ki bilkul zaroorat nahi ha.
@@ -207,6 +269,12 @@ function generateExpertFallbackResponse(message: string, context?: FitnessAiCont
   }
 
   if (q.includes('preworkout') || q.includes('pre workout') || q.includes('c4') || q.includes('caffeine')) {
+    if (en) return `### ⚡ Pre-Workout (C4 / Psychotic) Guide
+
+1. **Timing:** Take 1 scoop in 200ml cold water **20 to 25 minutes before** you start training.
+2. **Food:** Don't take it straight after a meal; leave at least 1.5 hours for full blood flow and pump.
+3. **Precaution:** Training after 8 PM? Take half a scoop so the caffeine doesn't ruin your sleep.
+4. **Tolerance:** Train 1-2 days a week without pre-workout so your body doesn't get used to caffeine.`;
     return `### ⚡ Pre-Workout (C4 / Psychotic) Guide
 
 1. **Timing:** Gym start karne se **20 se 25 minute pehle** 200ml thanday paani me 1 scoop len.
@@ -215,7 +283,17 @@ function generateExpertFallbackResponse(message: string, context?: FitnessAiCont
 4. **Tolerance:** Hafte me 1-2 din bina pre-workout training karein taake body caffeine ki aadi na ho.`;
   }
 
-  if (q.includes('anabolic') || q.includes('serious mass') || q.includes('carnivor') || q.includes('gainer') || q.includes('pet')) {
+  if (q.includes('anabolic') || q.includes('serious mass') || q.includes('carnivor') || q.includes('gainer') || q.includes('pet') || q.includes('belly')) {
+    if (en) return `### 🥩 Mass Gainer (Anabolic Mass / Serious Mass / Carnivor) Guide
+
+1. **How to Avoid Belly Fat:**
+   - A mass gainer has 1000+ calories. Never start with 2 full scoops!
+   - Take a **half serving (1 scoop = ~500-600 kcal)** for the first 2-3 weeks.
+   - Keep the rest of your home food clean (dry roti, boiled rice, no fried parathas).
+2. **Carnivor Beef Mass vs Anabolic Mass:**
+   - **Carnivor:** 100% beef isolate (0% lactose). If milk gives you gas or an upset stomach, Carnivor is the best choice.
+   - **Anabolic Mass:** Kevin Levrone's high-calorie gainer with DAA and test boosters, excellent for hardgainers.
+3. **Workout Intensity:** Pair the gainer with heavy compound lifts (bench, squats, deadlifts) so the calories become muscle instead of fat!`;
     return `### 🥩 Mass Gainer (Anabolic Mass / Serious Mass / Carnivor) Guide
 
 1. **Pet (Belly Fat) Se Bachne Ka Tareeqa:**
@@ -228,6 +306,15 @@ function generateExpertFallbackResponse(message: string, context?: FitnessAiCont
 3. **Workout Intensity:** Gainer ke sath gym me heavy compound exercises (Bench, Squats, Deadlifts) karein taake calories charbi ke bajaye muscle me convert hon!`;
   }
 
+  if (en) return `### 💡 GymPro AI Coach Recommendation (${weight}kg Bodyweight)
+
+Based on your question:
+- **Daily Target:** ${calories} calories and ${protein}g protein.
+- **Goal Strategy:** Control your portions for ${context?.goal?.replace('_', ' ').toUpperCase() || 'FITNESS'}.
+- **Hydration:** Drinking **${water} liters of water** a day is a must.
+- **Workout:** Train 5 days a week, 5 exercises a day, 3-4 sets of 8-10 heavy reps each.
+
+*You can ask something more specific (e.g. Mass Gainer, Creatine, Pre-workout, or a Full Diet Plan)!*`;
   return `### 💡 GymPro AI Coach Recommendation (${weight}kg Bodyweight)
 
 Aap ke sawal ke mutabiq:

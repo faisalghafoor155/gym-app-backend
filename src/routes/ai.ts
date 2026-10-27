@@ -48,7 +48,7 @@ const progressFor = async (req: AuthedRequest<unknown>): Promise<string | undefi
 };
 
 router.post('/chat', authed(async (req: AuthedRequest<Record<string, string>, unknown, AiChatPayload>, res: Response): Promise<void> => {
-  const { message, context, apiKey } = req.body;
+  const { message, context, apiKey, lang } = req.body;
 
   if (!message || typeof message !== 'string') {
     res.status(400).json({ error: 'Message is required' });
@@ -67,6 +67,7 @@ router.post('/chat', authed(async (req: AuthedRequest<Record<string, string>, un
       context,
       apiKey: apiKey || (req.headers['x-ai-api-key'] as string | undefined),
       progress,
+      lang: lang === 'en' ? 'en' : 'ur',
     });
 
     res.json({ reply });
