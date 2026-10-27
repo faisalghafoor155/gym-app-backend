@@ -152,10 +152,41 @@ export const sendMail = async (mail: Mail): Promise<boolean> => {
  * revoked app password looks exactly like a mail that was sent. This is the
  * outside check: an error code, never the credentials.
  */
-export const verifyMail = async (): Promise<{ ok: boolean; error?: string }> => {
+/**
+ * Resend has no login to try, so ask it about the key and the sender instead.
+ * The refusals this catches — a dead key, an unverified From — are rejected
+ * before a message exists, so they never show in Resend's own Emails list.
+ */
+const verifyResend = async (): Promise<{ ok: boolean; error?: string; note?: string }> => {
+  const res = await fetch('https://api.resend.com/domains', {
+    headers: { Authorization: `Bearer ${resendKey!}` },
+  });
+  const body = await res.json().catch(() => ({})) as {
+    name?: string;
+    data?: { name: string; status: string }[];
+  };
+
+  // A sending-only key cannot list domains, but it can send.
+  if (res.status === 401 && body.name === 'restricted_api_key') return { ok: true };
+  if (!res.ok) return { ok: false, error: `resend: API key rejected (${res.status})` };
+
+  const domain = from.match(/@([^>\s]+)/)?.[1]?.toLowerCase() ?? '';
+  if (domain === 'resend.dev') {
+    return {
+      ok: true,
+      note: 'resend: onboarding sender — delivers only to the Resend account\'s own address',
+    };
+  }
+  const verified = body.data?.some(d => d.name.toLowerCase() === domain && d.status === 'verified');
+  return verified
+    ? { ok: true }
+    : { ok: false, error: 'resend: MAIL_FROM domain is not verified in Resend' };
+};
+
+export const verifyMail = async (): Promise<{ ok: boolean; error?: string; note?: string }> => {
   if (!mailEnabled) return { ok: false, error: 'not configured' };
-  if (resendKey) return { ok: true };
   try {
+    if (resendKey) return await verifyResend();
     await transporter!.verify();
     return { ok: true };
   } catch (err) {
