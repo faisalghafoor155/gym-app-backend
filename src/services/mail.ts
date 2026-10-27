@@ -59,20 +59,14 @@ const from = real(process.env.MAIL_FROM)
   ?? (resendKey ? 'onboarding@resend.dev' : user ?? 'no-reply@localhost');
 
 /**
- * The From header for one message: the gym's name, or the app's, in front of
- * the configured address.
+ * The From header: always the app's name in front of the configured address.
  *
  * A bare address shows in the inbox as whoever owns the mailbox — the owner's
  * own name, for a gym sending through its Gmail — so a member reading
- * "Faisal" cannot tell a password reset from a personal note. An address that
- * already carries a display name is the operator's choice and is left alone.
+ * "Faisal" cannot tell a password reset from a personal note. A display name
+ * already in MAIL_FROM is replaced for the same reason.
  */
-const fromFor = (name: string | undefined): string => {
-  if (from.includes('<')) return from;
-  // Quotes, backslashes and line breaks would let a gym name rewrite the header.
-  const display = (name?.trim() || 'GymPro').replace(/["\\\r\n]/g, '');
-  return `"${display}" <${from}>`;
-};
+const fromHeader = `"GymPro" <${from.match(/<([^>]+)>/)?.[1] ?? from}>`;
 
 const transporter: Transporter | null = smtpConfigured
   ? nodemailer.createTransport({
@@ -94,7 +88,7 @@ const sendViaResend = async (mail: Mail): Promise<boolean> => {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      from: fromFor(mail.fromName),
+      from: fromHeader,
       to: [mail.to],
       subject: mail.subject,
       text: mail.text,
@@ -113,8 +107,6 @@ const sendViaResend = async (mail: Mail): Promise<boolean> => {
 
 export interface Mail {
   to: string;
-  /** Shown as the sender's name — the gym's, when the mail is on its behalf. */
-  fromName?: string;
   subject: string;
   text: string;
   html?: string;
@@ -143,8 +135,7 @@ export const sendMail = async (mail: Mail): Promise<boolean> => {
 
   try {
     if (resendKey) return await sendViaResend(mail);
-    const { fromName, ...message } = mail;
-    await transporter!.sendMail({ from: fromFor(fromName), ...message });
+    await transporter!.sendMail({ from: fromHeader, ...mail });
     return true;
   } catch (err) {
     // Logged rather than rethrown: the caller's response must not change

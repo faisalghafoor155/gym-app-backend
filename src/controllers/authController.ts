@@ -445,7 +445,6 @@ export const forgotPassword = async (
     // when SMTP is unconfigured, so the flow stays usable either way.
     await sendMail({
       to: user.email,
-      fromName: user.gym?.name,
       ...passwordResetMail(link, RESET_TTL_MS / 60_000, user.gym?.name),
     });
 

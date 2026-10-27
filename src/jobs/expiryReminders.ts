@@ -178,7 +178,6 @@ const notify = async (
     } else {
       const ok = await sendMail({
         to: member.email,
-        fromName: m.gym.name,
         ...membershipExpiryMail(member.name, m.gym.name, m.plan.name),
       });
 
