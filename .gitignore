@@ -5,3 +5,11 @@ node_modules
 !.env.example
 
 /src/generated/prisma
+
+# Standalone repo: these were covered by the monorepo's root .gitignore
+dist/
+*.tsbuildinfo
+*.log
+skills-lock.json
+.DS_Store
+Thumbs.db
